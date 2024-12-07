@@ -9,14 +9,12 @@ tokens, user sessions, and handling login and logout easily.
 
 ## Features
 
-- Issuer Metadata Handling: Automatically fetches metadata (e.g., endpoints,
-  keys) from the OIDC issuer.
-- Token Management: Manages ID tokens and refresh tokens securely with
-  expiration handling.
-- Session Integration: Provides middleware and handlers for managing user
-  authentication states.
 - Customizable: Abstract methods allow flexibility in how tokens are stored or
   retrieved.
+- Session Integration: Provides middleware and handlers for managing user
+  authentication states.
+- Issuer Metadata Handling: Automatically fetches metadata (e.g., endpoints,
+  keys) from the OIDC issuer.
 
 ## Installation
 
