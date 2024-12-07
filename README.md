@@ -21,7 +21,7 @@ tokens, user sessions, and handling login and logout easily.
 ## Installation
 
 ```bash
-npx jsr install @gw31415/hono-oidc-simple
+npx jsr add @gw31415/hono-oidc-simple
 ```
 
 ## Usage
