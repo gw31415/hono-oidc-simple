@@ -1,21 +1,21 @@
-import type { Context } from "npm:hono@4.6.9";
+import type { Context } from "jsr:@hono/hono@4";
 import type {
   Handler,
   HandlerResponse,
   Next,
   TypedResponse,
-} from "npm:hono@4.6.9/types";
-import type { StatusCode } from "npm:hono@4.6.9/utils/http-status";
+} from "jsr:@hono/hono@4/types";
+import type { StatusCode } from "jsr:@hono/hono@4/utils/http-status";
 import {
   createRemoteJWKSet,
   decodeJwt,
   type JWTPayload,
   jwtVerify,
-} from "npm:jose@5.9.6";
-export type { JWTPayload } from "npm:jose@5.9.6";
+} from "npm:jose@5";
+export type { JWTPayload } from "npm:jose@5";
 
 /** 認証エラーの種類 */
-export type OIDCError = "OAuthServerError" | "Unauthorized";
+export type OidcError = "OAuthServerError" | "Unauthorized";
 
 /** OpenIDのIssuerのメタデータ */
 export interface IssuerMetadata<Issuer extends string | unknown = unknown> {
@@ -69,9 +69,9 @@ export abstract class Oidc<Issuer extends string | unknown = unknown> {
     c: Context,
     keys:
       | {
-          token: string;
-          payload: JWTPayload;
-        }
+        token: string;
+        payload: JWTPayload;
+      }
       | undefined,
   ): Promise<void>;
 
@@ -228,7 +228,7 @@ export abstract class Oidc<Issuer extends string | unknown = unknown> {
       c: Context,
       res:
         | { payload: JWTPayload; error?: undefined }
-        | { error: OIDCError; payload?: undefined },
+        | { error: OidcError; payload?: undefined },
     ) => Promise<HandlerResponse<any>> | HandlerResponse<any>,
   ): (
     c: Context,
@@ -286,7 +286,7 @@ export abstract class Oidc<Issuer extends string | unknown = unknown> {
         authUrl.searchParams.append("scope", "openid");
         if (
           metadata.auth_endpoint ===
-          "https://accounts.google.com/o/oauth2/v2/auth"
+            "https://accounts.google.com/o/oauth2/v2/auth"
         ) {
           authUrl.searchParams.append("access_type", "offline");
           authUrl.searchParams.append("prompt", "consent");

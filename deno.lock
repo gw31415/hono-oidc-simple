@@ -1,13 +1,15 @@
 {
   "version": "4",
   "specifiers": {
-    "npm:hono@4.6.9": "4.6.9",
-    "npm:jose@5.9.6": "5.9.6"
+    "jsr:@hono/hono@4": "4.6.13",
+    "npm:jose@5": "5.9.6"
+  },
+  "jsr": {
+    "@hono/hono@4.6.13": {
+      "integrity": "198970fc6facf71a88ee57aa1ed32143b56bcb0f842fa965ca3ee7d6fdd21a8e"
+    }
   },
   "npm": {
-    "hono@4.6.9": {
-      "integrity": "sha512-p/pN5yZLuZaHzyAOT2nw2/Ud6HhJHYmDNGH6Ck1OWBhPMVeM1r74jbCRwNi0gyFRjjbsGgoHbOyj7mT1PDNbTw=="
-    },
     "jose@5.9.6": {
       "integrity": "sha512-AMlnetc9+CV9asI19zHmrgS/WYsWUwCn2R7RzlbJWD7F9eWYUTGyBmU9o6PxngtLGOiDGPRu+Uc4fhKzbpteZQ=="
     }
