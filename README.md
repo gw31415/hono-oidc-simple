@@ -14,6 +14,11 @@ tokens, user sessions, and handling login and logout easily.
   authentication states.
 - Issuer Metadata Handling: Automatically fetches metadata (e.g., endpoints,
   keys) from the OIDC issuer.
+- Multi-Runtime Support: Works with below runtimes:
+  - [x] Bun
+  - [x] Cloudflare Workers
+  - [x] Deno
+  - [x] Node.js
 
 ## Installation
 
@@ -23,9 +28,7 @@ npm i @gw31415/hono-oidc-simple
 
 ## Usage
 
-### Minimal Setup Example
-
-Define Your Oidc Implementation
+### Define Your Oidc Implementation
 
 You need to extend the abstract Oidc class and implement methods to retrieve and
 store tokens.
@@ -147,9 +150,9 @@ app.get(
 app.get("/logout", oidc.logoutHandler((c) => c.redirect("/")));
 ```
 
-### Middleware for Authentication
+### Create Middleware for Authentication
 
-You can require authentication for specific routes using middleware.
+You can require authentication for specific routes using your middleware like so:
 
 ```ts
 app.use("/protected", async (c, next) => {
@@ -163,4 +166,4 @@ app.use("/protected", async (c, next) => {
 
 ## License
 
-Apache-2.0 License.
+Apache-2.0
