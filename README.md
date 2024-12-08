@@ -32,11 +32,13 @@ store tokens.
 
 ```ts
 import {
-  type IssuerMetadata,
-  type MayIssuer,
   Oidc as AbstractOidc,
+  type IssuerMetadata,
+  type JWTPayload,
+  type MayIssuer,
 } from "@gw31415/hono-oidc-simple";
 import type { Context } from "hono";
+import { env } from "hono/adapter";
 import { deleteCookie, getCookie, setCookie } from "hono/cookie";
 
 const COOKIE_MAXAGE = 60 * 60 * 24 * 30 * 6; // 6 months
