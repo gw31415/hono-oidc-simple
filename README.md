@@ -1,5 +1,4 @@
 # @gw31415/hono-oidc-simple
-[![JSR](https://jsr.io/badges/@gw31415/hono-oidc-simple)](https://jsr.io/@gw31415/hono-oidc-simple)
 
 `@gw31415/hono-oidc-simple` simplifies the implementation of OpenID Connect
 (OIDC) authentication in Hono-based applications. It provides tools for managing
@@ -37,7 +36,7 @@ import {
   type MayIssuer,
   Oidc as AbstractOidc,
 } from "@gw31415/hono-oidc-simple";
-import { Context } from "hono";
+import type { Context } from "hono";
 import { deleteCookie, getCookie, setCookie } from "hono/cookie";
 
 const COOKIE_MAXAGE = 60 * 60 * 24 * 30 * 6; // 6 months

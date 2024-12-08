@@ -1,0 +1,41 @@
+{
+  "name": "@gw31415/hono-oidc-simple",
+  "version": "0.2.0",
+  "publishConfig": {
+    "access": "public"
+  },
+  "description": "Simplifies the implementation of OIDC auth in Hono",
+  "main": "dist/index.cjs",
+  "module": "dist/index.mjs",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "build": "run-p build:*",
+    "build:esbuild": "ts-node build.ts",
+    "build:types": "tsc --declaration --emitDeclarationOnly --declarationDir ./dist"
+  },
+  "files": ["dist"],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/gw31415/hono-oidc-simple.git"
+  },
+  "keywords": ["Hono", "OIDC"],
+  "author": "gw31415",
+  "license": "Apache-2.0",
+  "bugs": {
+    "url": "https://github.com/gw31415/hono-oidc-simple/issues"
+  },
+  "homepage": "https://github.com/gw31415/hono-oidc-simple",
+  "$schema": "http://json.schemastore.org/package",
+  "devDependencies": {
+    "@biomejs/biome": "^1.9.4",
+    "esbuild": "^0.24.0",
+    "hono": "^4.6.13",
+    "npm-run-all": "^4.1.5",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.7.2"
+  },
+  "dependencies": {
+    "jose": "^5.9.6"
+  }
+}

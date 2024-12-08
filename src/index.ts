@@ -1,18 +1,13 @@
-import type { Context } from "jsr:@hono/hono@4";
-import type {
-  Handler,
-  HandlerResponse,
-  Next,
-  TypedResponse,
-} from "jsr:@hono/hono@4/types";
-import type { StatusCode } from "jsr:@hono/hono@4/utils/http-status";
+import type { Context } from "hono";
+import type { Handler, HandlerResponse, Next, TypedResponse } from "hono/types";
+import type { StatusCode } from "hono/utils/http-status";
 import {
+  type JWTPayload,
   createRemoteJWKSet,
   decodeJwt,
-  type JWTPayload,
   jwtVerify,
-} from "npm:jose@5";
-export type { JWTPayload } from "npm:jose@5";
+} from "jose";
+export type { JWTPayload } from "jose";
 
 /** 認証エラーの種類 */
 export type OidcError = "OAuthServerError" | "Unauthorized";
@@ -69,9 +64,9 @@ export abstract class Oidc<Issuer extends string | unknown = unknown> {
     c: Context,
     keys:
       | {
-        token: string;
-        payload: JWTPayload;
-      }
+          token: string;
+          payload: JWTPayload;
+        }
       | undefined,
   ): Promise<void>;
 
@@ -141,16 +136,13 @@ export abstract class Oidc<Issuer extends string | unknown = unknown> {
   }
 
   /** トークンのペイロードを取得 */
-  private async tokenToPayload(
-    c: Context,
-    token: string | undefined,
-  ): Promise<JWTPayload | undefined> {
+  private async tokenToPayload(c: Context, token: string | undefined) {
     const metadata = await this.getIssuerMetadataOf(c, token);
     if (!metadata) {
       return;
     }
     let idToken = token;
-    let payload = undefined;
+    let payload: JWTPayload | undefined = undefined;
     for (let i = 2 /* 検証回数 */; i > 0; i--) {
       try {
         if (idToken) {
@@ -214,7 +206,7 @@ export abstract class Oidc<Issuer extends string | unknown = unknown> {
   public logoutHandler<
     R extends HandlerResponse<any>,
     T extends Handler<any, any, any, R>,
-  >(callback: T): (c: Context, next: Next) => Promise<R> {
+  >(callback: T) {
     return async (c: Context, next: Next) => {
       await this.logout(c);
       return callback(c, next);
@@ -286,7 +278,7 @@ export abstract class Oidc<Issuer extends string | unknown = unknown> {
         authUrl.searchParams.append("scope", "openid");
         if (
           metadata.auth_endpoint ===
-            "https://accounts.google.com/o/oauth2/v2/auth"
+          "https://accounts.google.com/o/oauth2/v2/auth"
         ) {
           authUrl.searchParams.append("access_type", "offline");
           authUrl.searchParams.append("prompt", "consent");
