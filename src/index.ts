@@ -1,13 +1,6 @@
 import type { Context } from "hono";
 import type { Handler, HandlerResponse, Next, TypedResponse } from "hono/types";
 import type { StatusCode } from "hono/utils/http-status";
-import {
-  type JWTPayload,
-  createRemoteJWKSet,
-  decodeJwt,
-  jwtVerify,
-} from "jose";
-export type { JWTPayload } from "jose";
 
 /** 認証エラーの種類 */
 export type OidcError = "OAuthServerError" | "Unauthorized";
@@ -22,8 +15,6 @@ export interface IssuerMetadata<Issuer extends string | unknown = unknown> {
   token_endpoint: string;
   /** OpenID Connect のトークンリボケーションエンドポイント */
   token_revocation_endpoint: string;
-  /** OpenID Connect の JWKS URI */
-  jwks_uri: string;
   /** OpenID Connect のクライアント ID */
   client_id: string;
   /** OpenID Connect のクライアントシークレット */
@@ -41,7 +32,10 @@ export type MustIssuer<Issuer extends string | unknown> = Issuer extends string
   : string;
 
 /** OpenID Connect のハンドラやミドルウェアのセット */
-export abstract class Oidc<Issuer extends string | unknown = unknown> {
+export abstract class Oidc<
+  Issuer extends string | unknown = unknown,
+  Payload = any,
+> {
   /** Issuer URL からメタデータを取得 */
   protected abstract getIssuerMetadata(
     c: Context,
@@ -52,47 +46,40 @@ export abstract class Oidc<Issuer extends string | unknown = unknown> {
 
   /** 保存したリフレッシュトークンを取得する方法 (例：Cookie から取得) */
   protected abstract getRefreshToken(c: Context): Promise<string | undefined>;
-  /** リフレッシュトークンを保存する方法 */
+  /** リフレッシュトークンを保存する方法 (例：Cookie に保存) */
   protected abstract setRefreshToken(
     c: Context,
-    token: string | undefined,
+    token: string | null,
   ): Promise<void>;
   /** 保存した ID トークンを取得する方法 (例：Cookie から取得) */
   protected abstract getIDToken(c: Context): Promise<string | undefined>;
-  /** ID トークンを保存する方法 */
+  /** ID トークンを保存する方法 (例：JWTに変換してCookie に保存) */
   protected abstract setIDToken(
     c: Context,
-    keys:
-      | {
-          token: string;
-          payload: JWTPayload;
-        }
-      | undefined,
+    keys: {
+      token: string;
+      payload: Payload;
+    } | null,
   ): Promise<void>;
 
   /** アクセストークンからIssuer URLを取得 */
-  private getIssuerMetadataOf(
+  protected abstract getIssuerFromToken(
     c: Context,
     token: string | undefined,
-  ): Promise<IssuerMetadata | undefined> {
-    if (!token) {
-      return Promise.resolve(undefined);
-    }
-    const payload = decodeJwt(token);
-    if (!payload?.iss) {
-      return Promise.resolve(undefined);
-    }
-    return this.getIssuerMetadata(
-      c,
-      payload.iss as Issuer extends string ? Issuer : string, // TODO
-    );
-  }
+  ): Promise<MustIssuer<Issuer> | undefined>;
+  /** トークンをペイロードに変換 */
+  protected abstract getPayloadFromToken(
+    c: Context,
+    token: string | undefined,
+  ): Promise<Payload | undefined>;
 
   /** トークン無効化・ログアウト処理 */
   private async logout(c: Context): Promise<void> {
     const accessToken = await this.getIDToken(c);
     if (accessToken) {
-      const metadata = await this.getIssuerMetadataOf(c, accessToken);
+      const iss = await this.getIssuerFromToken(c, accessToken);
+      const metadata =
+        iss === undefined ? undefined : await this.getIssuerMetadata(c, iss);
       if (metadata) {
         await fetch(metadata.token_revocation_endpoint, {
           method: "POST",
@@ -121,85 +108,18 @@ export abstract class Oidc<Issuer extends string | unknown = unknown> {
         }
       }
     }
-    await this.setRefreshToken(c, undefined);
-    await this.setIDToken(c, undefined);
+    await this.setRefreshToken(c, null);
+    await this.setIDToken(c, null);
   }
 
   /** 現在のトークンを検証しペイロードを取得 */
-  public async getPayload(c: Context): Promise<JWTPayload | undefined> {
+  public async getPayload(c: Context): Promise<Payload | undefined> {
     const idToken = await this.getIDToken(c);
     if (!idToken) {
       await this.logout(c);
       return;
     }
-    return this.tokenToPayload(c, idToken);
-  }
-
-  /** トークンのペイロードを取得 */
-  private async tokenToPayload(c: Context, token: string | undefined) {
-    const metadata = await this.getIssuerMetadataOf(c, token);
-    if (!metadata) {
-      return;
-    }
-    let idToken = token;
-    let payload: JWTPayload | undefined = undefined;
-    for (let i = 2 /* 検証回数 */; i > 0; i--) {
-      try {
-        if (idToken) {
-          const jwks = createRemoteJWKSet(new URL(metadata.jwks_uri));
-          payload = (
-            await jwtVerify(idToken, jwks, {
-              issuer: metadata.issuer,
-              audience: metadata.client_id,
-            })
-          ).payload;
-          if (payload.iss !== metadata.issuer) {
-            // ID Token の発行者が異なる場合は無効とする
-            // iss Claimはオプショナルだが、このモジュールでは必須
-            throw new Error("Invalid issuer");
-          }
-          // ID Token の検証に成功した場合
-          this.setIDToken(c, {
-            token: idToken,
-            payload,
-          });
-          return payload;
-        }
-        throw new Error("ID Token is empty (maybe logout-state)");
-      } catch (_error) {
-        if (i > 1) {
-          // 最後のループ以外はトークンの再取得を試行する
-          idToken = undefined;
-          const refresh_token = await this.getRefreshToken(c);
-          if (refresh_token) {
-            const tokenResponse = await fetch(metadata.token_endpoint, {
-              method: "POST",
-              headers: {
-                "Content-Type": "application/x-www-form-urlencoded",
-              },
-              body: new URLSearchParams({
-                refresh_token,
-                client_id: metadata.client_id,
-                client_secret: metadata.client_secret,
-                grant_type: "refresh_token",
-              }),
-            });
-            const tokenData = tokenResponse
-              ? await tokenResponse.json()
-              : (undefined as any);
-            const mayIDToken = tokenData?.id_token;
-            if (typeof mayIDToken === "string") {
-              // ID Token の取得に成功した場合は再度検証を試みる
-              idToken = mayIDToken as string;
-            }
-          }
-        }
-      }
-    }
-
-    // 数回試しても取得できなかった→無効なリフレッシュトークンとみなす
-    // トークン無効化処理
-    await this.logout(c);
+    return this.getPayloadFromToken(c, idToken);
   }
 
   /** ログアウト用ハンドラ */
@@ -219,7 +139,7 @@ export abstract class Oidc<Issuer extends string | unknown = unknown> {
     callback: (
       c: Context,
       res:
-        | { payload: JWTPayload; error?: undefined }
+        | { payload: Payload; error?: undefined }
         | { error: OidcError; payload?: undefined },
     ) => Promise<HandlerResponse<any>> | HandlerResponse<any>,
   ): (
@@ -267,7 +187,7 @@ export abstract class Oidc<Issuer extends string | unknown = unknown> {
       }
 
       // ID Token の検証
-      const payload = await this.tokenToPayload(c, token);
+      const payload = await this.getPayloadFromToken(c, token);
       if (!payload) {
         // 有効なrefresh_tokenもないということ
         // ユーザーのアクセスによるログイン開始と見なす

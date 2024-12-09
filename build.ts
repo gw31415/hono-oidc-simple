@@ -1,7 +1,9 @@
 import { type BuildOptions, build } from "esbuild";
-import { dependencies } from "./package.json";
+import { readFileSync } from "node:fs";
 
+const dependencies = JSON.parse(readFileSync("package.json", "utf-8")).dependencies || {};
 const entryFile = "src/index.ts";
+
 const config: BuildOptions = {
   bundle: true,
   entryPoints: [entryFile],

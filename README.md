@@ -8,12 +8,10 @@ tokens, user sessions, and handling login and logout easily.
 
 ## Features
 
+- Middleware Creation: Provides middleware and handlers for managing user
+  authentication states.
 - Customizable: Abstract methods allow flexibility in how tokens are stored or
   retrieved.
-- Session Integration: Provides middleware and handlers for managing user
-  authentication states.
-- Issuer Metadata Handling: Automatically fetches metadata (e.g., endpoints,
-  keys) from the OIDC issuer.
 - Multi-Runtime Support: Works with below runtimes:
   - [x] Bun
   - [x] Cloudflare Workers
@@ -37,16 +35,22 @@ store tokens.
 import {
   Oidc as AbstractOidc,
   type IssuerMetadata,
-  type JWTPayload,
   type MayIssuer,
 } from "@gw31415/hono-oidc-simple";
 import type { Context } from "hono";
 import { env } from "hono/adapter";
 import { deleteCookie, getCookie, setCookie } from "hono/cookie";
+import type { CookieOptions } from "hono/utils/cookie";
+import {
+  type JWTPayload,
+  createRemoteJWKSet,
+  decodeJwt,
+  jwtVerify,
+} from "jose";
 
 const COOKIE_MAXAGE = 60 * 60 * 24 * 30 * 6; // 6 months
 
-class Oidc extends AbstractOidc<"https://accounts.google.com"> {
+class Oidc extends AbstractOidc<"https://accounts.google.com", JWTPayload> {
   async getIssuerMetadata(
     c: Context,
     iss: MayIssuer<"https://accounts.google.com">,
@@ -69,6 +73,83 @@ class Oidc extends AbstractOidc<"https://accounts.google.com"> {
       };
     }
     return undefined;
+  }
+  async getIssuerFromToken(
+    c: Context,
+    token: string,
+  ): Promise<"https://accounts.google.com" | undefined> {
+    const payload = decodeJwt(token);
+    if (!payload?.iss) {
+      return undefined;
+    }
+    if (payload.iss !== "https://accounts.google.com") {
+      return undefined;
+    }
+    return payload.iss;
+  }
+  async getPayloadFromToken(
+    c: Context,
+    token: string,
+  ): Promise<JWTPayload | undefined> {
+    const iss = await this.getIssuerFromToken(c, token);
+    const metadata = await this.getIssuerMetadata(c, iss);
+    let payload: JWTPayload | undefined = undefined;
+    let idToken: string | undefined = token;
+    for (let i = 2 /* 検証回数 */; i > 0; i--) {
+      try {
+        if (idToken) {
+          const jwks = createRemoteJWKSet(new URL(metadata.jwks_uri));
+          payload = (
+            await jwtVerify(idToken, jwks, {
+              issuer: metadata.issuer,
+              audience: metadata.client_id,
+            })
+          ).payload;
+          if (payload.iss !== metadata.issuer) {
+            // ID Token の発行者が異なる場合は無効とする
+            // iss Claimはオプショナルだが、このモジュールでは必須
+            throw new Error("Invalid issuer");
+          }
+          // ID Token の検証に成功した場合
+          this.setIDToken(c, {
+            token: idToken,
+            payload,
+          });
+          return payload;
+        }
+        throw new Error("ID Token is empty (maybe logout-state)");
+      } catch (_error) {
+        if (i > 1) {
+          // 最後のループ以外はトークンの再取得を試行する
+          idToken = undefined;
+          const refresh_token = await this.getRefreshToken(c);
+          if (refresh_token) {
+            const tokenResponse = await fetch(metadata.token_endpoint, {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/x-www-form-urlencoded",
+              },
+              body: new URLSearchParams({
+                refresh_token,
+                client_id: metadata.client_id,
+                client_secret: metadata.client_secret,
+                grant_type: "refresh_token",
+              }),
+            });
+            const tokenData = tokenResponse
+              ? await tokenResponse.json()
+              : (undefined as any);
+            const mayIDToken = tokenData?.id_token;
+            if (typeof mayIDToken === "string") {
+              // ID Token の取得に成功した場合は再度検証を試みる
+              idToken = mayIDToken as string;
+            }
+          }
+        } else {
+          return undefined;
+        }
+      }
+    }
   }
 
   override async getRefreshToken(c: Context): Promise<string | undefined> {
