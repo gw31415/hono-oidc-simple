@@ -7,6 +7,10 @@ settings:
 importers:
 
   .:
+    dependencies:
+      hono:
+        specifier: ^4.6.13
+        version: 4.6.13
     devDependencies:
       '@biomejs/biome':
         specifier: ^1.9.4
@@ -17,9 +21,6 @@ importers:
       esbuild:
         specifier: ^0.24.0
         version: 0.24.0
-      hono:
-        specifier: ^4.6.13
-        version: 4.6.13
       npm-run-all:
         specifier: ^4.1.5
         version: 4.1.5

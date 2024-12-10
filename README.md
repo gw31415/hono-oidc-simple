@@ -40,18 +40,48 @@ import {
 import type { Context } from "hono";
 import { env } from "hono/adapter";
 import { deleteCookie, getCookie, setCookie } from "hono/cookie";
-import type { CookieOptions } from "hono/utils/cookie";
-import {
-  type JWTPayload,
-  createRemoteJWKSet,
-  decodeJwt,
-  jwtVerify,
-} from "jose";
+import { type JWTPayload, createRemoteJWKSet, jwtVerify } from "jose";
 
 const COOKIE_MAXAGE = 60 * 60 * 24 * 30 * 6; // 6 months
-
 class Oidc extends AbstractOidc<"https://accounts.google.com", JWTPayload> {
-  async getIssuerMetadata(
+  override getIssuerFromToken(_c: Context, _token: string): Promise<
+    "https://accounts.google.com" | undefined
+  > {
+    return Promise.resolve("https://accounts.google.com");
+  }
+  override async createClaimsWithToken(
+    c: Context,
+    token: string,
+  ): Promise<JWTPayload | undefined> {
+    const iss = await this.getIssuerFromToken(c, token);
+    const metadata = await this.getIssuerMetadata(c, iss);
+    let payload: JWTPayload | undefined = undefined;
+    const idToken: string | undefined = token;
+    if (idToken) {
+      const jwks = createRemoteJWKSet(
+        new URL("https://www.googleapis.com/oauth2/v3/certs"),
+      );
+      payload = (
+        await jwtVerify(idToken, jwks, {
+          issuer: metadata.issuer,
+          audience: metadata.client_id,
+        })
+      ).payload;
+      if (payload.iss !== metadata.issuer) {
+        // ID Token の発行者が異なる場合は無効とする
+        // iss Claimはオプショナルだが、このモジュールでは必須
+        throw new Error("Invalid issuer");
+      }
+      // ID Token の検証に成功した場合
+      this.setIDToken(c, {
+        token: idToken,
+        claims: payload,
+      });
+      return payload;
+    }
+    return undefined;
+  }
+  override async getIssuerMetadata(
     c: Context,
     iss: MayIssuer<"https://accounts.google.com">,
   ): Promise<IssuerMetadata<"https://accounts.google.com"> | undefined> {
@@ -67,89 +97,11 @@ class Oidc extends AbstractOidc<"https://accounts.google.com", JWTPayload> {
         auth_endpoint: "https://accounts.google.com/o/oauth2/v2/auth",
         token_endpoint: "https://www.googleapis.com/oauth2/v4/token",
         token_revocation_endpoint: "https://oauth2.googleapis.com/revoke",
-        jwks_uri: "https://www.googleapis.com/oauth2/v3/certs",
         client_id,
         client_secret,
       };
     }
     return undefined;
-  }
-  async getIssuerFromToken(
-    c: Context,
-    token: string,
-  ): Promise<"https://accounts.google.com" | undefined> {
-    const payload = decodeJwt(token);
-    if (!payload?.iss) {
-      return undefined;
-    }
-    if (payload.iss !== "https://accounts.google.com") {
-      return undefined;
-    }
-    return payload.iss;
-  }
-  async getPayloadFromToken(
-    c: Context,
-    token: string,
-  ): Promise<JWTPayload | undefined> {
-    const iss = await this.getIssuerFromToken(c, token);
-    const metadata = await this.getIssuerMetadata(c, iss);
-    let payload: JWTPayload | undefined = undefined;
-    let idToken: string | undefined = token;
-    for (let i = 2 /* 検証回数 */; i > 0; i--) {
-      try {
-        if (idToken) {
-          const jwks = createRemoteJWKSet(new URL(metadata.jwks_uri));
-          payload = (
-            await jwtVerify(idToken, jwks, {
-              issuer: metadata.issuer,
-              audience: metadata.client_id,
-            })
-          ).payload;
-          if (payload.iss !== metadata.issuer) {
-            // ID Token の発行者が異なる場合は無効とする
-            // iss Claimはオプショナルだが、このモジュールでは必須
-            throw new Error("Invalid issuer");
-          }
-          // ID Token の検証に成功した場合
-          this.setIDToken(c, {
-            token: idToken,
-            payload,
-          });
-          return payload;
-        }
-        throw new Error("ID Token is empty (maybe logout-state)");
-      } catch (_error) {
-        if (i > 1) {
-          // 最後のループ以外はトークンの再取得を試行する
-          idToken = undefined;
-          const refresh_token = await this.getRefreshToken(c);
-          if (refresh_token) {
-            const tokenResponse = await fetch(metadata.token_endpoint, {
-              method: "POST",
-              headers: {
-                "Content-Type": "application/x-www-form-urlencoded",
-              },
-              body: new URLSearchParams({
-                refresh_token,
-                client_id: metadata.client_id,
-                client_secret: metadata.client_secret,
-                grant_type: "refresh_token",
-              }),
-            });
-            const tokenData = tokenResponse
-              ? await tokenResponse.json()
-              : (undefined as any);
-            const mayIDToken = tokenData?.id_token;
-            if (typeof mayIDToken === "string") {
-              // ID Token の取得に成功した場合は再度検証を試みる
-              idToken = mayIDToken as string;
-            }
-          }
-        } else {
-          return undefined;
-        }
-      }
-    }
   }
 
   override async getRefreshToken(c: Context): Promise<string | undefined> {
@@ -157,7 +109,7 @@ class Oidc extends AbstractOidc<"https://accounts.google.com", JWTPayload> {
   }
   override async setRefreshToken(
     c: Context,
-    token: string | undefined,
+    token: string | null,
   ): Promise<void> {
     if (!token) {
       deleteCookie(c, "refresh_token");
@@ -175,20 +127,20 @@ class Oidc extends AbstractOidc<"https://accounts.google.com", JWTPayload> {
   }
 
   override async getIDToken(c: Context): Promise<string | undefined> {
-    return getCookie(c, "id_token");
+    return getCookie(c, "token");
   }
   override async setIDToken(
     c: Context,
-    keys: { token: string; payload: JWTPayload } | undefined,
+    keys: { token: string; claims: JWTPayload } | null,
   ): Promise<void> {
     if (!keys) {
-      deleteCookie(c, "id_token");
+      deleteCookie(c, "token");
       return;
     }
     const { token } = keys;
     const reqUrl = new URL(c.req.url);
     const secure = reqUrl.hostname !== "localhost";
-    return setCookie(c, "id_token", token, {
+    return setCookie(c, "token", token, {
       path: "/",
       sameSite: "Lax",
       httpOnly: true,
@@ -224,6 +176,11 @@ app.get(
       }
     }
 
+    const reqUrl = new URL(c.req.url);
+    if (reqUrl.searchParams.size > 0) {
+      const newUrl = new URL(reqUrl.origin + reqUrl.pathname);
+      return c.redirect(newUrl.toString());
+    }
     return c.redirect("/");
   }),
 );
