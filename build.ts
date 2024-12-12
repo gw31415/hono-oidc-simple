@@ -3,12 +3,14 @@ import { readFileSync } from "node:fs";
 
 const dependencies =
   JSON.parse(readFileSync("package.json", "utf-8")).dependencies || {};
+const peerDependencies =
+  JSON.parse(readFileSync("package.json", "utf-8")).peerDependencies || {};
 const entryFile = "src/index.ts";
 
 const config: BuildOptions = {
   bundle: true,
   entryPoints: [entryFile],
-  external: Object.keys(dependencies),
+  external: [...Object.keys(dependencies), ...Object.keys(peerDependencies)],
   logLevel: "info",
   minify: true,
   sourcemap: false,
