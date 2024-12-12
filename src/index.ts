@@ -6,72 +6,98 @@ import type { SignatureAlgorithm } from "hono/utils/jwt/jwa";
 import type { SignatureKey } from "hono/utils/jwt/jws";
 import { JwtTokenExpired } from "hono/utils/jwt/types";
 
-// Reference： https://github.com/honojs/honox/blob/f2094e35/src/factory/factory.ts#L6
+// Reference: https://github.com/honojs/honox/blob/f2094e35/src/factory/factory.ts#L6
 const factory = createFactory<Env>();
 const createHandlers = factory.createHandlers;
 
-/** 認証エラーの種類 */
+/** Type of authentication error */
 export type OidcError = "OAuthServerError" | "Unauthorized";
 
+/**
+ * Metadata for an OpenID Connect Issuer.
+ * @template Issuer The type of the Issuer.
+ */
 interface AbstractIssuerMetadata<Issuer extends string | unknown> {
-  /** OpenID Connect の Issuer */
+  /** OpenID Connect Issuer */
   issuer: MustIssuer<Issuer>;
-  /** OpenID Connect の認証エンドポイント */
+  /** OpenID Connect authentication endpoint */
   auth_endpoint: string;
-  /** OpenID Connect のトークンエンドポイント */
+  /** OpenID Connect token endpoint */
   token_endpoint: string;
-  /** OpenID Connect のトークンリボケーションエンドポイント */
+  /** OpenID Connect token revocation endpoint */
   token_revocation_endpoint: string;
-  /** OpenID Connect のクライアント ID */
+  /** OpenID Connect client ID */
   client_id: string;
-  /** OpenID Connect のクライアントシークレット */
+  /** OpenID Connect client secret */
   client_secret: string;
-  /** OpenID Connect のスコープ */
+  /** OpenID Connect scopes */
   scopes: string[];
 }
 
+/**
+ * Options for local JWT signing.
+ */
 interface LocalJwtOptions {
-  /** 署名用の秘密鍵 */
+  /** Private key for signing */
   privateKey: SignatureKey;
-  /** 署名アルゴリズム */
+  /** Signature algorithm */
   alg?: SignatureAlgorithm;
-  /** 有効寿命(ミリ秒) */
+  /** Validity period (in milliseconds) */
   maxAge: number;
 }
 
-/** OpenIDのIssuerのメタデータ */
+/**
+ * Metadata for an OpenID Connect Issuer.
+ * @template Issuer The type of the Issuer.
+ */
 export type IssuerMetadata<Issuer extends string | unknown = unknown> =
   | (AbstractIssuerMetadata<Issuer> & {
-      /** Issuerがリフレッシュトークンを発行するか */
+      /** Indicates if the Issuer supports refresh tokens */
       token_refreshable: false;
-      /** Refresh Tokenが用意されない時、独自JWTを作成するためのオプション */
+      /** Options for creating custom JWT when no refresh token is available */
       local_jwt_options: LocalJwtOptions;
     })
   | (AbstractIssuerMetadata<Issuer> & {
-      /** Issuerがリフレッシュトークンを発行するか */
+      /** Indicates if the Issuer supports refresh tokens */
       token_refreshable: true;
     });
 
-/** Issuer URLが期待されるが、他の文字列も入ってくる可能性がある型 */
+/**
+ * Represents a type that may be an Issuer URL, but other strings are possible.
+ * @template Issuer The type of the Issuer.
+ */
 export type MayIssuer<Issuer extends string | unknown> = Issuer extends string
   ? Issuer | (string & Record<never, never>)
   : string;
 
-/** Issuer URLのみが許容される型 */
+/**
+ * Represents a type that must be an Issuer URL.
+ * @template Issuer The type of the Issuer.
+ */
 export type MustIssuer<Issuer extends string | unknown> = Issuer extends string
   ? Issuer
   : string;
 
+/** Custom claims for JWT tokens */
 export type CustomClaims = {
   [key: Exclude<string, "exp">]: any | undefined;
 };
 
-/** OpenID Connect のハンドラやミドルウェアのセット */
+/**
+ * A set of handlers and middleware for OpenID Connect.
+ * @template Issuer The type of the Issuer.
+ * @template Claims The type of custom claims.
+ */
 export abstract class Oidc<
   Issuer extends string | unknown = unknown,
   Claims extends CustomClaims = CustomClaims,
 > {
-  /** Issuer URL からメタデータを取得 */
+  /**
+   * Retrieves metadata for the given Issuer.
+   * @param c The Hono context.
+   * @param iss The Issuer URL.
+   * @returns The metadata for the Issuer, or `undefined` if not found.
+   */
   protected abstract getIssuerMetadata(
     c: Context,
     iss: MayIssuer<Issuer>,
@@ -79,16 +105,35 @@ export abstract class Oidc<
     IssuerMetadata<Issuer extends string ? Issuer : string> | undefined
   >;
 
-  /** 保存したリフレッシュトークンを取得する方法 (例：Cookie から取得) */
+  /**
+   * Retrieves the stored refresh token.
+   * @param c The Hono context.
+   * @returns The refresh token, or `undefined` if not found.
+   */
   protected abstract getRefreshToken(c: Context): Promise<string | undefined>;
-  /** リフレッシュトークンを保存する方法 (例：Cookie に保存) */
+
+  /**
+   * Stores a refresh token.
+   * @param c The Hono context.
+   * @param token The refresh token to store, or `null` to clear it.
+   */
   protected abstract setRefreshToken(
     c: Context,
     token: string | null,
   ): Promise<void>;
-  /** 保存した ID トークンを取得する方法 (例：Cookie から取得) */
+
+  /**
+   * Retrieves the stored ID token.
+   * @param c The Hono context.
+   * @returns The ID token, or `undefined` if not found.
+   */
   protected abstract getIDToken(c: Context): Promise<string | undefined>;
-  /** ID トークンを保存する方法 (例：JWTに変換してCookie に保存) */
+
+  /**
+   * Stores an ID token.
+   * @param c The Hono context.
+   * @param keys The token and claims to store, or `null` to clear it.
+   */
   protected abstract setIDToken(
     c: Context,
     keys: {
@@ -97,7 +142,13 @@ export abstract class Oidc<
     } | null,
   ): Promise<void>;
 
-  /** アクセストークンからIssuer URLを取得。 */
+  /**
+   * Retrieves the Issuer URL from an access token.
+   * @param c The Hono context.
+   * @param token The access token.
+   * @param tryJwtDecode A function to attempt decoding the JWT.
+   * @returns The Issuer URL, or `undefined` if not found.
+   */
   protected abstract getIssuerFromToken(
     c: Context,
     token: string | undefined,
@@ -107,13 +158,22 @@ export abstract class Oidc<
         })
       | undefined,
   ): Promise<MustIssuer<Issuer> | undefined>;
-  /** トークンをカスタムClaimsに変換 */
+
+  /**
+   * Converts a token into custom claims.
+   * @param c The Hono context.
+   * @param token The token to convert.
+   * @returns The custom claims, or `undefined` if conversion fails.
+   */
   protected abstract createClaimsWithToken(
     c: Context,
     token: string,
   ): Promise<Claims | undefined>;
 
-  /** トークン無効化・ログアウト処理 */
+  /**
+   * Logs out the user by invalidating tokens.
+   * @param c The Hono context.
+   */
   private async logout(c: Context): Promise<void> {
     const idToken = await this.getIDToken(c);
     if (idToken) {
@@ -161,7 +221,11 @@ export abstract class Oidc<
     await this.setIDToken(c, null);
   }
 
-  /** 現在のトークンを検証しカスタムClaimsを取得 */
+  /**
+   * Validates the current token and retrieves custom claims.
+   * @param c The Hono context.
+   * @returns The custom claims, or `undefined` if validation fails.
+   */
   public async getCustomClaims(c: Context): Promise<Claims | undefined> {
     const idToken = await this.getIDToken(c);
     if (!idToken) {
@@ -255,7 +319,11 @@ export abstract class Oidc<
     return undefined;
   }
 
-  /** ログアウト用ハンドラ */
+  /**
+   * Creates a logout handler.
+   * @param callback The next handler to execute after logout.
+   * @returns The composed handler.
+   */
   public logoutHandler<T extends Handler>(callback: T) {
     return createHandlers(async (c, n) => {
       await this.logout(c);
@@ -263,7 +331,12 @@ export abstract class Oidc<
     });
   }
 
-  /** ログイン用ハンドラ */
+  /**
+   * Creates a login handler.
+   * @param iss The Issuer URL.
+   * @param callback A callback function for handling the login result.
+   * @returns The composed handler.
+   */
   public loginHandler(
     iss: MustIssuer<Issuer>,
     callback: (
