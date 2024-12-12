@@ -8,6 +8,8 @@ tokens, user sessions, and handling login and logout easily.
 
 ## Features
 
+- Zero Dependency: No `dependencies` in `package.json`. Only `devDependencies` or
+  `peerDependencies`.
 - Middleware Creation: Provides middleware and handlers for managing user
   authentication states.
 - Customizable: Abstract methods allow flexibility in how tokens are stored or
