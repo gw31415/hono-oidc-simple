@@ -1,4 +1,6 @@
 # @gw31415/hono-oidc-simple
+[![npm version](https://badge.fury.io/js/@gw31415%2Fhono-oidc-simple.svg?icon=si%3Anpm)](https://badge.fury.io/js/@gw31415%2Fhono-oidc-simple)
+[![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 
 `@gw31415/hono-oidc-simple` simplifies the implementation of OpenID Connect
 (OIDC) authentication in Hono-based applications. It provides tools for managing
