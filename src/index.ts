@@ -89,7 +89,7 @@ export type CustomClaims = {
  * @template Claims The type of custom claims.
  */
 export abstract class Oidc<
-  Issuer extends string | unknown = unknown,
+  const Issuer extends string | unknown = unknown,
   Claims extends CustomClaims = CustomClaims,
 > {
   /**
