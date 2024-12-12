@@ -15,7 +15,7 @@ export type OidcError = "OAuthServerError" | "Unauthorized";
 
 /**
  * Metadata for an OpenID Connect Issuer.
- * @template Issuer The type of the Issuer.
+ * @template Issuer Union of the const-strings that represent Issuer URLs.
  */
 interface AbstractIssuerMetadata<Issuer extends string | unknown> {
   /** OpenID Connect Issuer */
@@ -48,7 +48,7 @@ interface LocalJwtOptions {
 
 /**
  * Metadata for an OpenID Connect Issuer.
- * @template Issuer The type of the Issuer.
+ * @template Issuer Union of the const-strings that represent Issuer URLs.
  */
 export type IssuerMetadata<Issuer extends string | unknown = unknown> =
   | (AbstractIssuerMetadata<Issuer> & {
@@ -64,7 +64,7 @@ export type IssuerMetadata<Issuer extends string | unknown = unknown> =
 
 /**
  * Represents a type that may be an Issuer URL, but other strings are possible.
- * @template Issuer The type of the Issuer.
+ * @template Issuer Union of the const-strings that represent Issuer URLs.
  */
 export type MayIssuer<Issuer extends string | unknown> = Issuer extends string
   ? Issuer | (string & Record<never, never>)
@@ -72,7 +72,7 @@ export type MayIssuer<Issuer extends string | unknown> = Issuer extends string
 
 /**
  * Represents a type that must be an Issuer URL.
- * @template Issuer The type of the Issuer.
+ * @template Issuer Union of the const-strings that represent Issuer URLs.
  */
 export type MustIssuer<Issuer extends string | unknown> = Issuer extends string
   ? Issuer
@@ -85,7 +85,7 @@ export type CustomClaims = {
 
 /**
  * A set of handlers and middleware for OpenID Connect.
- * @template Issuer The type of the Issuer.
+ * @template Issuer Union of the const-strings that represent Issuer URLs.
  * @template Claims The type of custom claims.
  */
 export abstract class Oidc<
