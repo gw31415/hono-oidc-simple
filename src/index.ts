@@ -273,21 +273,91 @@ const OIDCVirtualStore = <C extends CustomClaims, IU extends string>(
 };
 
 /**
+ * Get type of OIDC
+ */
+type OIDCType<T> = T extends OIDC<CustomClaims, string>
+  ? T
+  : T extends {
+        __oidc: infer U;
+      } & Record<keyof any, unknown>
+    ? OIDCType<U>
+    : T extends {
+          Variables: infer U;
+        } & Record<keyof any, unknown>
+      ? OIDCType<U>
+      : T extends MiddlewareHandler<infer U>
+        ? OIDCType<U>
+        : never;
+
+/**
+ * Get type of OIDC Custom Claims
+ */
+export type ClaimsType<T> = OIDCType<T> extends OIDC<infer C, string>
+  ? C
+  : T extends IssuerMetadata<infer C, string>
+    ? C
+    : T extends OidcOptions<infer C, string>
+      ? C
+      : T extends CustomClaims
+        ? T
+        : never;
+
+/**
+ * Get type of OIDC Issuer URL
+ */
+export type IssuerType<T> = OIDCType<T> extends OIDC<CustomClaims, infer IU>
+  ? IU
+  : T extends IssuerMetadata<CustomClaims, infer IU>
+    ? IU
+    : T extends OidcOptions<CustomClaims, infer IU>
+      ? IU
+      : never;
+
+type OIDCVariables<C extends CustomClaims, IU extends string> = {
+  __oidc: OIDC<C, IU>;
+} & Record<keyof any, unknown>;
+
+type OIDCEnv<C extends CustomClaims, IU extends string> = {
+  Variables: OIDCVariables<C, IU>;
+} & Record<keyof any, unknown>;
+
+type OIDCMiddleware<
+  C extends CustomClaims,
+  IU extends string,
+> = MiddlewareHandler<OIDCEnv<C, IU>>;
+
+type UseClaimsEnv<C extends CustomClaims> = {
+  Variables: {
+    claims: C | undefined;
+  } & Record<keyof any, unknown>;
+};
+
+type OIDCClaimsMiddleware<
+  C extends CustomClaims,
+  IU extends string,
+> = MiddlewareHandler<
+  OIDCEnv<C, IU> & UseClaimsEnv<C> & Record<keyof any, unknown>
+>;
+
+/**
+ * Get type of Middleware with CustomClaims
+ */
+export type WithClaimsMiddlewareType<T> = ClaimsType<T> extends CustomClaims
+  ? MiddlewareHandler<UseClaimsEnv<ClaimsType<T>>>
+  : never;
+
+/**
  * Middleware to use OpenID Connect.
  * @template C Custom claims for JWT tokens
  * @template IU Union of the const-strings that represent Issuer URLs.
  * @param opts OIDC options
- * @returns Middleware
+ * @returns OIDCMiddleware
  */
 export const oidc = <C extends CustomClaims, IU extends string>(
   opts:
     | OidcOptions<C, IU>
     | ((c: Context) => OidcOptions<C, IU> | Promise<OidcOptions<C, IU>>),
-): MiddlewareHandler<{
-  Variables: {
-    __oidc: OIDC<C, IU>;
-  };
-}> => {
+): OIDCMiddleware<C, IU> => {
   return async (c, n) => {
     if (c.get("__oidc")) {
       await n();
@@ -308,12 +378,7 @@ export const oidc = <C extends CustomClaims, IU extends string>(
 export const useClaims = <
   C extends CustomClaims,
   IU extends string,
->(): MiddlewareHandler<{
-  Variables: {
-    __oidc: OIDC<C, IU>;
-    claims: C | undefined;
-  };
-}> => {
+>(): OIDCClaimsMiddleware<C, IU> => {
   return async (c, n) => {
     const oidc = c.get("__oidc")!;
     const claims = await oidc.getClaims(c);
@@ -597,7 +662,7 @@ class OIDC<C extends CustomClaims, IU extends string> {
     };
   }
 
-  public async getClaims(c: Context) {
+  public async getClaims(c: Context): Promise<C | undefined> {
     const idToken = await this.#tokens.getIDToken(c);
     if (!idToken) {
       await this.logout(c);
@@ -678,7 +743,7 @@ class OIDC<C extends CustomClaims, IU extends string> {
     return undefined;
   }
 
-  public async logout(c: Context) {
+  public async logout(c: Context): Promise<void> {
     const idToken = await this.#tokens.getIDToken(c);
     if (idToken) {
       const metadata = await this.#getIssuerMetadata(c);

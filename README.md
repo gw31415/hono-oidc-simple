@@ -113,26 +113,34 @@ const useOIDC = oidc((c) => {
 });
 ```
 
-### Use the middleware to get the claims
+### Create your Middlewares to get the claims
 
 ```ts
-/** Middleware to specify pages requiring login */
-const loginRequired = every(useOIDC, useClaims(), async (c, next) => {
-  if (!(await c.var.claims)) {
+type Middleware = WithClaimsMiddlewareType<typeof useOIDC>;
+
+/** Middleware to use CustomClaims */
+export const withClaims: Middleware = every(useOIDC, useClaims());
+
+/** Middleware to specify pages that require login */
+export const loginRequired: Middleware = every(withClaims, (async (
+  c,
+  next,
+) => {
+  if (!c.var.claims) {
     return c.render(
       <div className="font-sans size-full flex items-center justify-center">
         <Card>
           <CardHeader>
-            <CardTitle>Protected Website</CardTitle>
+            <CardTitle>Protected Page</CardTitle>
           </CardHeader>
           <CardContent>
             <CardDescription>
-              Only Google authenticated users can log in.
+	      You must be logged in to view this page.
             </CardDescription>
           </CardContent>
           <CardFooter>
             <Button asChild className="w-full">
-              <a href="/login">Login with Google</a>
+              <a href="/login">Login</a>
             </Button>
           </CardFooter>
         </Card>
@@ -141,7 +149,7 @@ const loginRequired = every(useOIDC, useClaims(), async (c, next) => {
     );
   }
   return await next();
-});
+}) satisfies Middleware);
 ```
 
 ## License
