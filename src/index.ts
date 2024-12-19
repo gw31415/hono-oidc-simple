@@ -1,25 +1,24 @@
 import type { Context } from "hono";
-import { createFactory } from "hono/factory";
-import { decode, sign, verify } from "hono/jwt";
-import type { Env, Handler, HandlerResponse } from "hono/types";
+import { sign, verify } from "hono/jwt";
+import type { BlankInput, Handler, Input, MiddlewareHandler } from "hono/types";
 import type { SignatureAlgorithm } from "hono/utils/jwt/jwa";
 import type { SignatureKey } from "hono/utils/jwt/jws";
 import { JwtTokenExpired } from "hono/utils/jwt/types";
 
-// Reference: https://github.com/honojs/honox/blob/f2094e35/src/factory/factory.ts#L6
-const factory = createFactory<Env>();
-const createHandlers = factory.createHandlers;
+type NonNull = Record<never, never>;
 
-/** Type of authentication error */
-export type OidcError = "OAuthServerError" | "Unauthorized";
+/** Custom claims for JWT tokens */
+export type CustomClaims = {
+  [key: Exclude<string, "exp">]: NonNull | undefined;
+};
 
 /**
  * Metadata for an OpenID Connect Issuer.
  * @template Issuer Union of the const-strings that represent Issuer URLs.
  */
-interface AbstractIssuerMetadata<Issuer extends string | unknown> {
+interface AbstractIssuerMetadata<IU extends string> {
   /** OpenID Connect Issuer */
-  issuer: MustIssuer<Issuer>;
+  issuer: IU;
   /** OpenID Connect authentication endpoint */
   auth_endpoint: string;
   /** OpenID Connect token endpoint */
@@ -48,161 +47,211 @@ interface LocalJwtOptions {
 
 /**
  * Metadata for an OpenID Connect Issuer.
- * @template Issuer Union of the const-strings that represent Issuer URLs.
+ * @template I Union of the const-strings that represent Issuer URLs.
  */
-export type IssuerMetadata<Issuer extends string | unknown = unknown> =
-  | (AbstractIssuerMetadata<Issuer> & {
+export type IssuerMetadata<C extends CustomClaims, IU extends string> =
+  | (AbstractIssuerMetadata<IU> & {
       /** Indicates if the Issuer supports refresh tokens */
-      token_refreshable: false;
+      supports_refresh: false;
       /** Options for creating custom JWT when no refresh token is available */
       local_jwt_options: LocalJwtOptions;
+      createClaims: (
+        c: Context,
+        tokens: RefreshTokenGetter,
+      ) => C | undefined | Promise<C | undefined>;
     })
-  | (AbstractIssuerMetadata<Issuer> & {
+  | (AbstractIssuerMetadata<IU> & {
       /** Indicates if the Issuer supports refresh tokens */
-      token_refreshable: true;
+      supports_refresh: true;
+      createClaims: (c: Context, tokens: TokenGetter) => C | Promise<C>;
     });
 
 /**
- * Represents a type that may be an Issuer URL, but other strings are possible.
- * @template Issuer Union of the const-strings that represent Issuer URLs.
+ * Options for OpenID Connect.
+ * @template C Custom claims for JWT tokens
+ * @template IU Union of the const-strings that represent Issuer URLs.
  */
-export type MayIssuer<Issuer extends string | unknown> = Issuer extends string
-  ? Issuer | (string & Record<never, never>)
-  : string;
+export interface OidcOptions<C extends CustomClaims, IU extends string> {
+  /** Issuer metadata */
+  issuers: IssuerMetadata<C, IU>[];
+  /** Function to get the Issuer URL */
+  getIssUrl: (c: Context) => IU | Promise<IU> | undefined;
+  /** Client-side token store */
+  clientSideTokenStore: TokenStore;
+}
 
-/**
- * Represents a type that must be an Issuer URL.
- * @template Issuer Union of the const-strings that represent Issuer URLs.
- */
-export type MustIssuer<Issuer extends string | unknown> = Issuer extends string
-  ? Issuer
-  : string;
+interface RefreshTokenSetter {
+  setRefreshToken(c: Context, token: string | undefined): void | Promise<void>;
+}
 
-/** Custom claims for JWT tokens */
-export type CustomClaims = {
-  [key: Exclude<string, "exp">]: any | undefined;
+interface IDTokenSetter {
+  setIDToken(c: Context, token: string | undefined): void | Promise<void>;
+}
+
+interface IDTokenGetter {
+  getIDToken(c: Context): string | undefined | Promise<string | undefined>;
+}
+
+interface RefreshTokenGetter {
+  getRefreshToken(c: Context): string | undefined | Promise<string | undefined>;
+}
+
+type TokenSetter = IDTokenSetter & RefreshTokenSetter;
+
+type TokenGetter = IDTokenGetter & RefreshTokenGetter;
+
+type TokenStore = TokenGetter & TokenSetter;
+
+const CacheStore = ({
+  cache,
+  src,
+}: { src: TokenStore; cache: TokenStore }): TokenStore => {
+  const inner: TokenStore = {
+    getIDToken: async (c) => {
+      let token = await cache.getIDToken(c);
+      if (!token) {
+        token = await src.getIDToken(c);
+        await cache.setIDToken(c, token);
+      }
+      return token;
+    },
+    getRefreshToken: async (c) => {
+      let token = await cache.getRefreshToken(c);
+      if (!token) {
+        token = await src.getRefreshToken(c);
+        await cache.setRefreshToken(c, token);
+      }
+      return token;
+    },
+    setIDToken: async (c, token) => {
+      await src.setIDToken(c, token);
+      await cache.setIDToken(c, token);
+    },
+    setRefreshToken: async (c, token) => {
+      await src.setRefreshToken(c, token);
+      await cache.setRefreshToken(c, token);
+    },
+  };
+  return inner;
 };
 
-/**
- * A set of handlers and middleware for OpenID Connect.
- * @template Issuer Union of the const-strings that represent Issuer URLs.
- * @template Claims The type of custom claims.
- */
-export abstract class Oidc<
-  const Issuer extends string | unknown = unknown,
-  Claims extends CustomClaims = CustomClaims,
-> {
-  /**
-   * Retrieves metadata for the given Issuer.
-   * @param c The Hono context.
-   * @param iss The Issuer URL.
-   * @returns The metadata for the Issuer, or `undefined` if not found.
-   */
-  protected abstract getIssuerMetadata(
-    c: Context,
-    iss: MayIssuer<Issuer>,
-  ): Promise<
-    IssuerMetadata<Issuer extends string ? Issuer : string> | undefined
-  >;
+const InMemoryStore = (): TokenStore => {
+  let itoken: string | undefined = undefined;
+  let rtoken: string | undefined = undefined;
+  return {
+    getIDToken: () => itoken,
+    getRefreshToken: () => rtoken,
+    setIDToken: (_, token) => {
+      itoken = token;
+    },
+    setRefreshToken: (_, token) => {
+      rtoken = token;
+    },
+  };
+};
 
-  /**
-   * Retrieves the stored refresh token.
-   * @param c The Hono context.
-   * @returns The refresh token, or `undefined` if not found.
-   */
-  protected abstract getRefreshToken(c: Context): Promise<string | undefined>;
+const OIDCVirtualStore = <C extends CustomClaims, IU extends string>(
+  _: Context,
+  opts: {
+    iss: IssuerMetadata<C, IU>;
+    token: TokenStore;
+  },
+): TokenStore => {
+  const refreshTokenStore: RefreshTokenSetter & RefreshTokenGetter =
+    InMemoryStore();
+  const inner: TokenStore = {
+    async getIDToken(c) {
+      const itoken = opts.token.getIDToken(c);
+      if (itoken) {
+        return itoken;
+      }
 
-  /**
-   * Stores a refresh token.
-   * @param c The Hono context.
-   * @param token The refresh token to store, or `null` to clear it.
-   */
-  protected abstract setRefreshToken(
-    c: Context,
-    token: string | null,
-  ): Promise<void>;
+      // Refresh
+      const rtoken = await inner.getRefreshToken(c);
+      if (!rtoken) {
+        return undefined;
+      }
 
-  /**
-   * Retrieves the stored ID token.
-   * @param c The Hono context.
-   * @returns The ID token, or `undefined` if not found.
-   */
-  protected abstract getIDToken(c: Context): Promise<string | undefined>;
+      const metadata = opts.iss;
 
-  /**
-   * Stores an ID token.
-   * @param c The Hono context.
-   * @param keys The token and claims to store, or `null` to clear it.
-   */
-  protected abstract setIDToken(
-    c: Context,
-    keys: {
-      token: string;
-      claims: Claims;
-    } | null,
-  ): Promise<void>;
+      if (!metadata.supports_refresh) {
+        const { privateKey, alg, maxAge } = metadata.local_jwt_options;
 
-  /**
-   * Retrieves the Issuer URL from an access token.
-   * @param c The Hono context.
-   * @param token The access token.
-   * @param tryJwtDecode A function to attempt decoding the JWT.
-   * @returns The Issuer URL, or `undefined` if not found.
-   */
-  protected abstract getIssuerFromToken(
-    c: Context,
-    token: string | undefined,
-    tryJwtDecode: () =>
-      | (Claims & {
-          exp: number;
-        })
-      | undefined,
-  ): Promise<MustIssuer<Issuer> | undefined>;
-
-  /**
-   * Converts a token into custom claims.
-   * @param c The Hono context.
-   * @param token The token to convert.
-   * @returns The custom claims, or `undefined` if conversion fails.
-   */
-  protected abstract createClaimsWithToken(
-    c: Context,
-    token: string,
-  ): Promise<Claims | undefined>;
-
-  /**
-   * Logs out the user by invalidating tokens.
-   * @param c The Hono context.
-   */
-  private async logout(c: Context): Promise<void> {
-    const idToken = await this.getIDToken(c);
-    if (idToken) {
-      const iss = await this.getIssuerFromToken(c, idToken, () => {
-        try {
-          const claims = decode(idToken).payload as Claims & {
-            exp: number;
-          };
-          return claims;
-        } catch {
+        const claims = await metadata.createClaims(c, {
+          getRefreshToken: () => rtoken,
+        });
+        if (!claims) {
           return undefined;
         }
-      }).catch(() => undefined);
-      const metadata =
-        iss === undefined ? undefined : await this.getIssuerMetadata(c, iss);
-      if (metadata) {
-        await fetch(metadata.token_revocation_endpoint, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/x-www-form-urlencoded",
+
+        // Re-issue with a refresh token if expired
+        const exp = Math.floor((Date.now() + maxAge) / 1000) + 1;
+        const token = await sign(
+          {
+            ...claims,
+            exp,
           },
-          body: new URLSearchParams({
-            token: idToken,
-            client_id: metadata.client_id,
-            client_secret: metadata.client_secret,
-          }),
-        }).catch(() => {});
-        const refresh_token = await this.getRefreshToken(c);
+          privateKey,
+          alg,
+        );
+        return token;
+      }
+
+      const tokenResponse = await fetch(metadata.token_endpoint, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/x-www-form-urlencoded",
+        },
+        body: new URLSearchParams({
+          refresh_token: rtoken,
+          client_id: metadata.client_id,
+          client_secret: metadata.client_secret,
+          grant_type: "refresh_token",
+        }),
+      });
+      const tokenData = tokenResponse
+        ? ((await tokenResponse.json()) as CustomClaims | undefined)
+        : undefined;
+      const mayIDToken = tokenData?.id_token;
+      if (typeof mayIDToken === "string") {
+        // If ID Token is successfully obtained, attempt verification again
+        return mayIDToken;
+      }
+      return undefined;
+    },
+    getRefreshToken: refreshTokenStore.getRefreshToken,
+    async setIDToken(c, token) {
+      const metadata = opts.iss;
+      if (!token) {
+        if (metadata.supports_refresh) {
+          const id_token = await opts.token.getIDToken(c);
+          if (id_token) {
+            await fetch(metadata.token_revocation_endpoint, {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/x-www-form-urlencoded",
+              },
+              body: new URLSearchParams({
+                token: id_token,
+                client_id: metadata.client_id,
+                client_secret: metadata.client_secret,
+              }),
+            }).catch(() => {});
+          }
+        }
+      } else {
+        await opts.token.setIDToken(c, token);
+      }
+    },
+    async setRefreshToken(c, token) {
+      await refreshTokenStore.setRefreshToken(c, token);
+      if (!token) {
+        const metadata = opts.iss;
+        const refresh_token = await opts.token.getRefreshToken(c);
         if (refresh_token) {
+          if (metadata.supports_refresh) {
+            inner.setIDToken(c, undefined); // Cascade
+          }
           await fetch(metadata.token_revocation_endpoint, {
             method: "POST",
             headers: {
@@ -215,57 +264,364 @@ export abstract class Oidc<
             }),
           }).catch(() => {});
         }
+      } else {
+        await opts.token.setRefreshToken(c, token);
       }
+    },
+  };
+  return inner;
+};
+
+/**
+ * Middleware to use OpenID Connect.
+ * @template C Custom claims for JWT tokens
+ * @template IU Union of the const-strings that represent Issuer URLs.
+ * @param opts OIDC options
+ * @returns Middleware
+ */
+export const oidc = <C extends CustomClaims, IU extends string>(
+  opts:
+    | OidcOptions<C, IU>
+    | ((c: Context) => OidcOptions<C, IU> | Promise<OidcOptions<C, IU>>),
+): MiddlewareHandler<{
+  Variables: {
+    __oidc: OIDC<C, IU>;
+  };
+}> => {
+  return async (c, n) => {
+    if (c.get("__oidc")) {
+      await n();
+      return;
     }
-    await this.setRefreshToken(c, null);
-    await this.setIDToken(c, null);
+    const o = typeof opts === "function" ? await opts(c) : opts;
+    const oidc = await OIDC.create(c, o);
+    c.set("__oidc", oidc);
+    await n();
+  };
+};
+
+/**
+ * Middleware to obtain claims from OpenID Connect.
+ * @template C Custom claims for JWT tokens
+ * @template IU Union of the const-strings that represent Issuer URLs.
+ */
+export const useClaims = <
+  C extends CustomClaims,
+  IU extends string,
+>(): MiddlewareHandler<{
+  Variables: {
+    __oidc: OIDC<C, IU>;
+    claims: C | undefined;
+  };
+}> => {
+  return async (c, n) => {
+    const oidc = c.get("__oidc")!;
+    const claims = await oidc.getClaims(c);
+    c.set("claims", claims);
+    await n();
+  };
+};
+
+/**
+ * Logout handler for OpenID Connect.
+ * @template P Path parameters
+ * @template I Input
+ * @param callback Callback function
+ * @returns Handler
+ */
+export const logoutHandler = <
+  P extends string = any,
+  I extends Input = BlankInput,
+>(
+  callback: (...args: Parameters<Handler>) => ReturnType<Handler>,
+): Handler<any, P, I> => {
+  return async (c, ...args) => {
+    const oidc = c.get("__oidc")!;
+    await oidc.logout(c);
+    return callback(c, ...args);
+  };
+};
+
+/**
+ * Login handler for OpenID Connect.
+ * @template C Custom claims for JWT tokens
+ * @template IU Union of the const-strings that represent Issuer URLs.
+ * @template P Path parameters
+ * @template I Input
+ * @param iss Issuer URL
+ * @param callback Callback function
+ * @returns Handler
+ */
+export const loginHandler = <
+  C extends CustomClaims,
+  IU extends string,
+  P extends string = any,
+  I extends Input = BlankInput,
+>(
+  iss: IU,
+  callback: (
+    res:
+      | {
+          type: "OK";
+          claims: C;
+        }
+      | {
+          type: "ERR";
+          error: "OAuthServerError";
+        }
+      | {
+          type: "ERR";
+          error: "Unauthorized";
+        },
+    ...args: Parameters<Handler>
+  ) => ReturnType<Handler>,
+): Handler<any, P, I> => {
+  return async (c, ...args) => {
+    const oidc = c.get("__oidc")!;
+    const res = await oidc.login(c, iss);
+
+    switch (res.type) {
+      case "RESPONSE":
+        return res.response;
+      case "OK":
+        c.set("claims", res.claims);
+    }
+    return callback(res, c, ...args);
+  };
+};
+
+/**
+ * Internal OpenID Connect client.
+ * @template C Custom claims for JWT tokens
+ * @template IU Union of the const-strings that represent Issuer URLs.
+ */
+class OIDC<C extends CustomClaims, IU extends string> {
+  readonly #tokens: TokenStore;
+  readonly #opts: OidcOptions<C, IU>;
+
+  private constructor(arg: {
+    tokens: TokenStore;
+    opts: OidcOptions<C, IU>;
+  }) {
+    this.#tokens = arg.tokens;
+    this.#opts = arg.opts;
   }
 
   /**
-   * Validates the current token and retrieves custom claims.
-   * @param c The Hono context.
-   * @returns The custom claims, or `undefined` if validation fails.
+   * Create an OIDC client.
+   * @param c Context
+   * @param opts OIDC options
+   * @returns OIDC client
    */
-  public async getCustomClaims(c: Context): Promise<Claims | undefined> {
-    const idToken = await this.getIDToken(c);
+  static async create<C extends CustomClaims, IU extends string>(
+    c: Context,
+    opts: OidcOptions<C, IU>,
+  ): Promise<OIDC<C, IU>> {
+    const issurl = await opts.getIssUrl(c);
+    const iss = opts.issuers.find((i) => i.issuer === issurl);
+    if (!iss) {
+      throw new Error("Issuer not found");
+    }
+    const clientSideTokenStore = CacheStore({
+      cache: InMemoryStore(),
+      src: opts.clientSideTokenStore,
+    });
+    const tokens: TokenStore = CacheStore({
+      cache: clientSideTokenStore,
+      src: OIDCVirtualStore(c, {
+        iss,
+        token: clientSideTokenStore,
+      }),
+    });
+    return new OIDC({
+      tokens,
+      opts,
+    });
+  }
+
+  async #getIssuerMetadata(
+    c: Context,
+  ): Promise<IssuerMetadata<C, IU> | undefined> {
+    const issurl = await this.#opts.getIssUrl(c);
+    if (!issurl) {
+      return undefined;
+    }
+    const iss = this.#opts.issuers.find((i) => i.issuer === issurl);
+    if (!iss) {
+      throw new Error("Issuer not found");
+    }
+    return iss;
+  }
+
+  /**
+   * Manually Login with OpenID Connect.
+   * @param c Context
+   * @param issurl OpenID Connect Issuer URL
+   * @returns Login result. If the login is successful, the claims are
+   * returned.
+   */
+  public async login(
+    c: Context,
+    issurl: IU,
+  ): Promise<
+    | {
+        type: "OK";
+        claims: C;
+      }
+    | {
+        type: "ERR";
+        error: "OAuthServerError";
+      }
+    | {
+        type: "ERR";
+        error: "Unauthorized";
+      }
+    | {
+        type: "RESPONSE";
+        response: Response;
+      }
+  > {
+    const metadata = this.#opts.issuers.find((i) => i.issuer === issurl);
+    if (!metadata) {
+      return {
+        type: "ERR",
+        error: "Unauthorized",
+      };
+    }
+    const reqUrl = new URL(c.req.url);
+    // Redirect URI is the same URL
+    const redirect_uri = reqUrl.origin + reqUrl.pathname;
+
+    const code = reqUrl.searchParams.get("code");
+    let token: undefined | string = undefined;
+
+    if (code) {
+      // If an authorization code is received
+      // Request token with authorization code
+      const tokenResponse = await fetch(metadata.token_endpoint, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/x-www-form-urlencoded",
+        },
+        body: new URLSearchParams({
+          code,
+          client_id: metadata.client_id,
+          client_secret: metadata.client_secret,
+          redirect_uri,
+          grant_type: "authorization_code",
+        }),
+      });
+
+      const tokenData = (await tokenResponse.json()) as any;
+      const mayToken = tokenData.access_token ?? tokenData.id_token;
+      if (typeof mayToken !== "string") {
+        return {
+          type: "ERR",
+          error: "OAuthServerError",
+        };
+      }
+      if (metadata.supports_refresh) {
+        // CASE1: a refresh token is available
+        // Save idToken and refresh_token
+        if (tokenData.refresh_token) {
+          await this.#tokens.setRefreshToken(c, `${tokenData.refresh_token}`);
+        }
+        token = mayToken;
+      } else {
+        // CASE2: there is no refresh token
+        // refresh_token: token
+        // idToken: Convert CustomClaims to JWT and save them
+        const claims: C | undefined = await metadata.createClaims(c, {
+          getRefreshToken: () => mayToken,
+        });
+        if (!claims) {
+          throw new Error("Invalid ID Token");
+        }
+        const exp =
+          Math.floor((Date.now() + metadata.local_jwt_options.maxAge) / 1000) +
+          1;
+        token = await sign(
+          {
+            ...claims,
+            exp,
+          },
+          metadata.local_jwt_options.privateKey,
+          metadata.local_jwt_options.alg,
+        );
+        await this.#tokens.setIDToken(c, token);
+        await this.#tokens.setRefreshToken(c, mayToken);
+        return {
+          type: "OK",
+          claims,
+        };
+      }
+    } else {
+      token = await this.#tokens.getIDToken(c);
+    }
+
+    // ID Token Validation
+    if (!token) {
+      // Here there is no valid refresh_token either.
+      // Considered as login start by user access
+      const authUrl = new URL(metadata.auth_endpoint);
+      authUrl.searchParams.append("response_type", "code");
+      authUrl.searchParams.append("client_id", metadata.client_id);
+      authUrl.searchParams.append("redirect_uri", redirect_uri);
+      authUrl.searchParams.append("scope", metadata.scopes.join(" "));
+      if (
+        metadata.auth_endpoint ===
+        "https://accounts.google.com/o/oauth2/v2/auth"
+      ) {
+        authUrl.searchParams.append("access_type", "offline");
+        authUrl.searchParams.append("prompt", "consent");
+      }
+      return {
+        type: "RESPONSE",
+        response: c.redirect(authUrl.toString()),
+      };
+    }
+
+    const claims = await metadata.createClaims(c, this.#tokens);
+    if (!claims) {
+      await this.logout(c);
+      return {
+        type: "ERR",
+        error: "Unauthorized",
+      };
+    }
+    // INFO: If claims can be obtained with getClaimsFromToken, the token is valid (type constraint is applied).
+    await this.#tokens.setIDToken(c, token!);
+    return {
+      type: "OK",
+      claims,
+    };
+  }
+
+  public async getClaims(c: Context) {
+    const idToken = await this.#tokens.getIDToken(c);
     if (!idToken) {
       await this.logout(c);
       return;
     }
-    const iss = await this.getIssuerFromToken(c, idToken, () => {
-      try {
-        const claims = decode(idToken).payload as Claims & {
-          exp: number;
-        };
-        return claims;
-      } catch {
-        return undefined;
-      }
-    }).catch(() => undefined);
-    const metadata =
-      iss === undefined ? undefined : await this.getIssuerMetadata(c, iss);
+    const metadata = await this.#getIssuerMetadata(c);
     if (!metadata) {
       await this.logout(c);
       return;
     }
-    if (!metadata.token_refreshable) {
+    if (!metadata.supports_refresh) {
       const { privateKey, alg, maxAge } = metadata.local_jwt_options;
       try {
         const claims = await verify(idToken, privateKey, alg);
-        return claims as Claims;
+        return claims as C;
       } catch (e) {
         if (e instanceof JwtTokenExpired) {
-          const external_request_token = await this.getRefreshToken(c);
-          const claims =
-            external_request_token === undefined
-              ? undefined
-              : await this.createClaimsWithToken(c, external_request_token);
+          const claims = await metadata.createClaims(c, this.#tokens);
           if (!claims) {
             await this.logout(c);
             return;
           }
 
-          // 有効期限切れの場合はリフレッシュトークンを使用して再発行
+          // Re-issue with a refresh token if expired
           const exp = Math.floor((Date.now() + maxAge) / 1000) + 1;
           const token = await sign(
             {
@@ -275,22 +631,22 @@ export abstract class Oidc<
             metadata.local_jwt_options.privateKey,
             metadata.local_jwt_options.alg,
           );
-          await this.setIDToken(c, { token, claims });
+          await this.#tokens.setIDToken(c, token);
           return claims;
         }
       }
 
-      // idToken が不正な場合はログアウト
+      // Logout if idToken is invalid
       await this.logout(c);
       return undefined;
     }
 
-    const claims = await this.createClaimsWithToken(c, idToken);
+    const claims = await metadata.createClaims(c, this.#tokens);
     if (claims) {
       return claims;
     }
 
-    const refresh_token = await this.getRefreshToken(c);
+    const refresh_token = await this.#tokens.getRefreshToken(c);
     if (!refresh_token) {
       await this.logout(c);
       return;
@@ -313,144 +669,48 @@ export abstract class Oidc<
       : (undefined as any);
     const mayIDToken = tokenData?.id_token;
     if (typeof mayIDToken === "string") {
-      // ID Token の取得に成功した場合は再度検証を試みる
-      return await this.createClaimsWithToken(c, mayIDToken);
+      // If ID Token is successfully obtained, attempt verification again
+      return await metadata.createClaims(c, {
+        getIDToken: () => mayIDToken,
+        getRefreshToken: () => refresh_token,
+      });
     }
     return undefined;
   }
 
-  /**
-   * Creates a logout handler.
-   * @param callback The next handler to execute after logout.
-   * @returns The composed handler.
-   */
-  public logoutHandler<T extends Handler>(callback: T) {
-    return createHandlers(async (c, n) => {
-      await this.logout(c);
-      return await callback(c, n);
-    });
-  }
-
-  /**
-   * Creates a login handler.
-   * @param iss The Issuer URL.
-   * @param callback A callback function for handling the login result.
-   * @returns The composed handler.
-   */
-  public loginHandler(
-    iss: MustIssuer<Issuer>,
-    callback: (
-      c: Context,
-      res:
-        | { claims: Claims; error?: undefined }
-        | { error: OidcError; claims?: undefined },
-    ) => Promise<HandlerResponse<any>> | HandlerResponse<any>,
-  ) {
-    return createHandlers(async (c: Context) => {
-      const metadata = await this.getIssuerMetadata(c, iss);
-      if (!metadata) {
-        return callback(c, { error: "Unauthorized" });
-      }
-      const reqUrl = new URL(c.req.url);
-      // リダイレクト URI は同じURL
-      const redirect_uri = reqUrl.origin + reqUrl.pathname;
-
-      const code = reqUrl.searchParams.get("code");
-      let token = undefined;
-
-      if (code) {
-        // 認可コードを受け取った場合
-        // 認可コードを使用してトークンをリクエスト
-        const tokenResponse = await fetch(metadata.token_endpoint, {
+  public async logout(c: Context) {
+    const idToken = await this.#tokens.getIDToken(c);
+    if (idToken) {
+      const metadata = await this.#getIssuerMetadata(c);
+      if (metadata) {
+        await fetch(metadata.token_revocation_endpoint, {
           method: "POST",
           headers: {
             "Content-Type": "application/x-www-form-urlencoded",
           },
           body: new URLSearchParams({
-            code,
+            token: idToken,
             client_id: metadata.client_id,
             client_secret: metadata.client_secret,
-            redirect_uri,
-            grant_type: "authorization_code",
           }),
-        });
-
-        const tokenData = (await tokenResponse.json()) as any;
-        const mayToken = tokenData.access_token ?? tokenData.id_token;
-        if (typeof mayToken !== "string") {
-          return callback(c, { error: "OAuthServerError" });
-        }
-        if (metadata.token_refreshable) {
-          // リフレッシュトークンがある場合
-          // idToken と refresh_token を保存
-          if (tokenData.refresh_token) {
-            await this.setRefreshToken(c, `${tokenData.refresh_token}`);
-          }
-          token = mayToken;
-        } else {
-          // リフレッシュトークンがない場合
-          // refresh_token: token
-          // idToken: 独自ClaimsをJWTに変換して保存
-          const claims: Claims | undefined = await this.createClaimsWithToken(
-            c,
-            mayToken,
-          );
-          if (!claims) {
-            throw new Error("Invalid ID Token");
-          }
-          const exp =
-            Math.floor(
-              (Date.now() + metadata.local_jwt_options.maxAge) / 1000,
-            ) + 1;
-          token = await sign(
-            {
-              ...claims,
-              exp,
+        }).catch(() => {});
+        const refresh_token = await this.#tokens.getRefreshToken(c);
+        if (refresh_token) {
+          await fetch(metadata.token_revocation_endpoint, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/x-www-form-urlencoded",
             },
-            metadata.local_jwt_options.privateKey,
-            metadata.local_jwt_options.alg,
-          );
-          await this.setIDToken(c, { token, claims });
-          await this.setRefreshToken(c, mayToken);
-          return callback(c, { claims: claims });
+            body: new URLSearchParams({
+              token: refresh_token,
+              client_id: metadata.client_id,
+              client_secret: metadata.client_secret,
+            }),
+          }).catch(() => {});
         }
-      } else {
-        token = await this.getIDToken(c);
       }
-
-      // ID Token の検証
-      if (!token) {
-        // 有効なrefresh_tokenもないということ
-        // ユーザーのアクセスによるログイン開始と見なす
-        const authUrl = new URL(metadata.auth_endpoint);
-        authUrl.searchParams.append("response_type", "code");
-        authUrl.searchParams.append("client_id", metadata.client_id);
-        authUrl.searchParams.append("redirect_uri", redirect_uri);
-        authUrl.searchParams.append("scope", metadata.scopes.join(" "));
-        if (
-          metadata.auth_endpoint ===
-          "https://accounts.google.com/o/oauth2/v2/auth"
-        ) {
-          authUrl.searchParams.append("access_type", "offline");
-          authUrl.searchParams.append("prompt", "consent");
-        }
-        return c.redirect(authUrl.toString());
-      }
-
-      const external_request_token = metadata.token_refreshable
-        ? token
-        : await this.getRefreshToken(c);
-      const claims =
-        external_request_token === undefined
-          ? undefined
-          : await this.createClaimsWithToken(c, external_request_token);
-      if (!claims) {
-        await this.logout(c);
-        return callback(c, { error: "Unauthorized" });
-      }
-      // INFO: getClaimsFromToken で claims が取得できた場合はトークンは有効(なように型制約している)
-      await this.setIDToken(c, { token: token!, claims });
-      return callback(c, { claims });
-    });
+    }
+    await this.#tokens.setRefreshToken(c, undefined);
+    await this.#tokens.setIDToken(c, undefined);
   }
 }

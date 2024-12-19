@@ -11,7 +11,7 @@ tokens, user sessions, and handling login and logout easily.
 ## Features
 
 - Zero Dependency: No `dependencies` in `package.json`. Only `devDependencies` or
-  `peerDependencies`.
+  `peerDependencies` (`hono`) are used.
 - Middleware Creation: Provides middleware and handlers for managing user
   authentication states.
 - Customizable: Abstract methods allow flexibility in how tokens are stored or
@@ -30,177 +30,115 @@ npm i @gw31415/hono-oidc-simple
 
 ## Usage
 
-### Define Your Oidc Implementation
 
-You need to extend the abstract Oidc class and implement methods to retrieve and
-store tokens.
+### Setup and Create Middleware of OIDC
 
 ```ts
-import {
-  Oidc as AbstractOidc,
-  type IssuerMetadata,
-  type MayIssuer,
-} from "@gw31415/hono-oidc-simple";
-import type { Context } from "hono";
-import { env } from "hono/adapter";
-import { deleteCookie, getCookie, setCookie } from "hono/cookie";
-import { type JWTPayload, createRemoteJWKSet, jwtVerify } from "jose";
-
+/** Cookie expiration period */
 const COOKIE_MAXAGE = 60 * 60 * 24 * 30 * 6; // 6 months
-class Oidc extends AbstractOidc<"https://accounts.google.com", JWTPayload> {
-  override getIssuerFromToken(_c: Context, _token: string): Promise<
-    "https://accounts.google.com" | undefined
-  > {
-    return Promise.resolve("https://accounts.google.com");
-  }
-  override async createClaimsWithToken(
-    c: Context,
-    token: string,
-  ): Promise<JWTPayload | undefined> {
-    const iss = await this.getIssuerFromToken(c, token);
-    const metadata = await this.getIssuerMetadata(c, iss);
-    let payload: JWTPayload | undefined = undefined;
-    const idToken: string | undefined = token;
-    if (idToken) {
-      const jwks = createRemoteJWKSet(
-        new URL("https://www.googleapis.com/oauth2/v3/certs"),
-      );
-      payload = (
-        await jwtVerify(idToken, jwks, {
-          issuer: metadata.issuer,
-          audience: metadata.client_id,
-        })
-      ).payload;
-      if (payload.iss !== metadata.issuer) {
-        // ID Token の発行者が異なる場合は無効とする
-        // iss Claimはオプショナルだが、このモジュールでは必須
-        throw new Error("Invalid issuer");
-      }
-      // ID Token の検証に成功した場合
-      this.setIDToken(c, {
-        token: idToken,
-        claims: payload,
-      });
-      return payload;
-    }
-    return undefined;
-  }
-  override async getIssuerMetadata(
-    c: Context,
-    iss: MayIssuer<"https://accounts.google.com">,
-  ): Promise<IssuerMetadata<"https://accounts.google.com"> | undefined> {
-    if (iss === "https://accounts.google.com") {
-      const envs = env<{
-        OIDC_GOOGLE_CLIENT: string;
-        OIDC_GOOGLE_SECRET: string;
-      }>(c);
-      const client_id = envs.OIDC_GOOGLE_CLIENT;
-      const client_secret = envs.OIDC_GOOGLE_SECRET;
-      return {
+
+const useOIDC = oidc((c) => {
+  const envs = env<{
+    OIDC_GOOGLE_CLIENT: string;
+    OIDC_GOOGLE_SECRET: string;
+  }>(c);
+  return {
+    issuers: [
+      {
         issuer: "https://accounts.google.com",
         auth_endpoint: "https://accounts.google.com/o/oauth2/v2/auth",
-        token_endpoint: "https://www.googleapis.com/oauth2/v4/token",
+        token_endpoint: "https://oauth2.googleapis.com/token",
         token_revocation_endpoint: "https://oauth2.googleapis.com/revoke",
-        client_id,
-        client_secret,
-      };
-    }
-    return undefined;
-  }
-
-  override async getRefreshToken(c: Context): Promise<string | undefined> {
-    return getCookie(c, "refresh_token");
-  }
-  override async setRefreshToken(
-    c: Context,
-    token: string | null,
-  ): Promise<void> {
-    if (!token) {
-      deleteCookie(c, "refresh_token");
-      return;
-    }
-    const reqUrl = new URL(c.req.url);
-    const opts: CookieOptions = {
-      path: "/",
-      sameSite: "Lax",
-      httpOnly: true,
-      secure: reqUrl.hostname !== "localhost",
-      maxAge: COOKIE_MAXAGE,
-    };
-    setCookie(c, "refresh_token", token, opts);
-  }
-
-  override async getIDToken(c: Context): Promise<string | undefined> {
-    return getCookie(c, "token");
-  }
-  override async setIDToken(
-    c: Context,
-    keys: { token: string; claims: JWTPayload } | null,
-  ): Promise<void> {
-    if (!keys) {
-      deleteCookie(c, "token");
-      return;
-    }
-    const { token } = keys;
-    const reqUrl = new URL(c.req.url);
-    const secure = reqUrl.hostname !== "localhost";
-    return setCookie(c, "token", token, {
-      path: "/",
-      sameSite: "Lax",
-      httpOnly: true,
-      secure,
-      maxAge: COOKIE_MAXAGE,
-    });
-  }
-}
+        supports_refresh: true,
+        createClaims: async (c, tokens) => {
+          const idToken: string | undefined = await token.getIDToken(c);
+          if (idToken) {
+            const jwks = createRemoteJWKSet(
+              new URL("https://www.googleapis.com/oauth2/v3/certs"),
+            );
+            try
+            {
+              const { payload } = await jwtVerify(idToken, jwks, {
+                issuer: "https://accounts.google.com",
+                audience: envs.OIDC_GOOGLE_CLIENT,
+              });
+              return payload as Claims;
+            } catch (e) {
+              console.error(e);
+            }
+          }
+          return undefined;
+        },
+        scopes: ["openid", "email", "profile"],
+        client_id: envs.OIDC_GOOGLE_CLIENT,
+        client_secret: envs.OIDC_GOOGLE_SECRET,
+      },
+    ],
+    getIssUrl: () => "https://accounts.google.com",
+    clientSideTokenStore: {
+      getRefreshToken: (c) => getCookie(c, "refresh_token"),
+      getIDToken: (c) => getCookie(c, "jwt"),
+      setRefreshToken: (c, token) => {
+        if (!token) {
+          deleteCookie(c, "refresh_token");
+          return;
+        }
+        const reqUrl = new URL(c.req.url);
+        const opts: CookieOptions = {
+          path: "/",
+          sameSite: "Lax",
+          httpOnly: true,
+          secure: reqUrl.hostname !== "localhost",
+          maxAge: COOKIE_MAXAGE,
+        };
+        setCookie(c, "refresh_token", token, opts);
+      },
+      setIDToken: (c, token) => {
+        if (!token) {
+          deleteCookie(c, "jwt");
+          return;
+        }
+        const reqUrl = new URL(c.req.url);
+        const secure = reqUrl.hostname !== "localhost";
+        return setCookie(c, "jwt", token, {
+          path: "/",
+          sameSite: "Lax",
+          httpOnly: true,
+          secure,
+          maxAge: COOKIE_MAXAGE,
+        });
+      },
+    },
+  };
+});
 ```
 
-### Create Login and Logout Routes
-
-Add login and logout routes using `loginHandler` and `logoutHandler`.
+### Use the middleware to get the claims
 
 ```ts
-import { Hono } from "hono";
-
-const app = new Hono();
-const oidc = new Oidc();
-
-app.get(
-  "/login",
-  oidc.loginHandler("https://accounts.google.com", (c, res) => {
-    if (res.error) {
-      const error = res.error;
-      switch (error) {
-        case "Unauthorized":
-          return c.redirect("/");
-        case "OAuthServerError":
-          return c.text(`Error: ${error}`, { status: 500 });
-        default:
-          return c.text("Invalid state", { status: 500 });
-      }
-    }
-
-    const reqUrl = new URL(c.req.url);
-    if (reqUrl.searchParams.size > 0) {
-      const newUrl = new URL(reqUrl.origin + reqUrl.pathname);
-      return c.redirect(newUrl.toString());
-    }
-    return c.redirect("/");
-  }),
-);
-
-app.get("/logout", oidc.logoutHandler((c) => c.redirect("/")));
-```
-
-### Create Middleware for Authentication
-
-You can require authentication for specific routes using your middleware like so:
-
-```ts
-app.use("/protected", async (c, next) => {
-  const payload = await oidc.getPayload(c);
-  if (!payload) {
-    return c.redirect("/login");
+/** Middleware to specify pages requiring login */
+const loginRequired = every(useOIDC, useClaims(), async (c, next) => {
+  if (!(await c.var.claims)) {
+    return c.render(
+      <div className="font-sans size-full flex items-center justify-center">
+        <Card>
+          <CardHeader>
+            <CardTitle>Protected Website</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <CardDescription>
+              Only Google authenticated users can log in.
+            </CardDescription>
+          </CardContent>
+          <CardFooter>
+            <Button asChild className="w-full">
+              <a href="/login">Login with Google</a>
+            </Button>
+          </CardFooter>
+        </Card>
+      </div>,
+      { title: "Login Required" },
+    );
   }
   return await next();
 });
