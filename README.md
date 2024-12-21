@@ -159,7 +159,7 @@ export const loginRequired: Middleware = every(useClaims, (async (c, next) => {
           </CardHeader>
           <CardContent>
             <CardDescription>
-	            You must be logged in to view this page.
+              You must be logged in to view this page.
             </CardDescription>
           </CardContent>
           <CardFooter>
