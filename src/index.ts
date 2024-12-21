@@ -1,14 +1,16 @@
 import type { Context } from "hono";
+import { every } from "hono/combine";
 import { sign, verify } from "hono/jwt";
-import type { BlankInput, Handler, Input, MiddlewareHandler } from "hono/types";
+import type { Handler, MiddlewareHandler } from "hono/types";
 import type { SignatureAlgorithm } from "hono/utils/jwt/jwa";
 import type { SignatureKey } from "hono/utils/jwt/jws";
 import { JwtTokenExpired } from "hono/utils/jwt/types";
 
+/** Not-null type */
 type NonNull = Record<never, never>;
 
 /** Custom claims for JWT tokens */
-export type CustomClaims = {
+type CustomClaims = {
   [key: Exclude<string, "exp">]: NonNull | undefined;
 };
 
@@ -20,15 +22,15 @@ interface AbstractIssuerMetadata<IU extends string> {
   /** OpenID Connect Issuer */
   issuer: IU;
   /** OpenID Connect authentication endpoint */
-  auth_endpoint: string;
+  authEndpoint: string;
   /** OpenID Connect token endpoint */
-  token_endpoint: string;
+  tokenEndpoint: string;
   /** OpenID Connect token revocation endpoint */
-  token_revocation_endpoint: string;
+  tokenRevocationEndpoint: string;
   /** OpenID Connect client ID */
-  client_id: string;
+  clientId: string;
   /** OpenID Connect client secret */
-  client_secret: string;
+  clientSecret: string;
   /** OpenID Connect scopes */
   scopes: string[];
 }
@@ -36,7 +38,7 @@ interface AbstractIssuerMetadata<IU extends string> {
 /**
  * Options for local JWT signing.
  */
-interface LocalJwtOptions {
+export interface LocalJwtOptions {
   /** Private key for signing */
   privateKey: SignatureKey;
   /** Signature algorithm */
@@ -52,9 +54,9 @@ interface LocalJwtOptions {
 export type IssuerMetadata<C extends CustomClaims, IU extends string> =
   | (AbstractIssuerMetadata<IU> & {
       /** Indicates if the Issuer supports refresh tokens */
-      supports_refresh: false;
+      useLocalJwt: true;
       /** Options for creating custom JWT when no refresh token is available */
-      local_jwt_options: LocalJwtOptions;
+      localJwtOptions: LocalJwtOptions;
       createClaims: (
         c: Context,
         tokens: RefreshTokenGetter,
@@ -62,7 +64,7 @@ export type IssuerMetadata<C extends CustomClaims, IU extends string> =
     })
   | (AbstractIssuerMetadata<IU> & {
       /** Indicates if the Issuer supports refresh tokens */
-      supports_refresh: true;
+      useLocalJwt: false;
       createClaims: (c: Context, tokens: TokenGetter) => C | Promise<C>;
     });
 
@@ -71,7 +73,7 @@ export type IssuerMetadata<C extends CustomClaims, IU extends string> =
  * @template C Custom claims for JWT tokens
  * @template IU Union of the const-strings that represent Issuer URLs.
  */
-export interface OidcOptions<C extends CustomClaims, IU extends string> {
+export interface OIDCOptions<C extends CustomClaims, IU extends string> {
   /** Issuer metadata */
   issuers: IssuerMetadata<C, IU>[];
   /** Function to get the Issuer URL */
@@ -80,27 +82,53 @@ export interface OidcOptions<C extends CustomClaims, IU extends string> {
   clientSideTokenStore: TokenStore;
 }
 
+/**
+ * Refresh token setter.
+ */
 interface RefreshTokenSetter {
   setRefreshToken(c: Context, token: string | undefined): void | Promise<void>;
 }
 
+/**
+ * ID token setter.
+ */
 interface IDTokenSetter {
   setIDToken(c: Context, token: string | undefined): void | Promise<void>;
 }
 
+/**
+ * ID token getter.
+ */
 interface IDTokenGetter {
   getIDToken(c: Context): string | undefined | Promise<string | undefined>;
 }
 
+/**
+ * Refresh token getter.
+ */
 interface RefreshTokenGetter {
   getRefreshToken(c: Context): string | undefined | Promise<string | undefined>;
 }
 
+/**
+ * ID token & refresh token setter.
+ */
 type TokenSetter = IDTokenSetter & RefreshTokenSetter;
 
+/**
+ * ID token & refresh token getter.
+ */
 type TokenGetter = IDTokenGetter & RefreshTokenGetter;
 
-type TokenStore = TokenGetter & TokenSetter;
+/**
+ * ID token & refresh token getter and setter.
+ */
+export type TokenStore = TokenGetter & TokenSetter;
+
+/**
+ * Refresh token getter and setter.
+ */
+type RefreshTokenStore = RefreshTokenGetter & RefreshTokenSetter;
 
 const CacheStore = ({
   cache,
@@ -157,8 +185,7 @@ const OIDCVirtualStore = <C extends CustomClaims, IU extends string>(
     token: TokenStore;
   },
 ): TokenStore => {
-  const refreshTokenStore: RefreshTokenSetter & RefreshTokenGetter =
-    InMemoryStore();
+  const refreshTokenStore: RefreshTokenStore = InMemoryStore();
   const inner: TokenStore = {
     async getIDToken(c) {
       const itoken = opts.token.getIDToken(c);
@@ -174,8 +201,8 @@ const OIDCVirtualStore = <C extends CustomClaims, IU extends string>(
 
       const metadata = opts.iss;
 
-      if (!metadata.supports_refresh) {
-        const { privateKey, alg, maxAge } = metadata.local_jwt_options;
+      if (metadata.useLocalJwt) {
+        const { privateKey, alg, maxAge } = metadata.localJwtOptions;
 
         const claims = await metadata.createClaims(c, {
           getRefreshToken: () => rtoken,
@@ -197,15 +224,15 @@ const OIDCVirtualStore = <C extends CustomClaims, IU extends string>(
         return token;
       }
 
-      const tokenResponse = await fetch(metadata.token_endpoint, {
+      const tokenResponse = await fetch(metadata.tokenEndpoint, {
         method: "POST",
         headers: {
           "Content-Type": "application/x-www-form-urlencoded",
         },
         body: new URLSearchParams({
           refresh_token: rtoken,
-          client_id: metadata.client_id,
-          client_secret: metadata.client_secret,
+          client_id: metadata.clientId,
+          client_secret: metadata.clientSecret,
           grant_type: "refresh_token",
         }),
       });
@@ -223,18 +250,18 @@ const OIDCVirtualStore = <C extends CustomClaims, IU extends string>(
     async setIDToken(c, token) {
       const metadata = opts.iss;
       if (!token) {
-        if (metadata.supports_refresh) {
+        if (!metadata.useLocalJwt) {
           const id_token = await opts.token.getIDToken(c);
           if (id_token) {
-            await fetch(metadata.token_revocation_endpoint, {
+            await fetch(metadata.tokenRevocationEndpoint, {
               method: "POST",
               headers: {
                 "Content-Type": "application/x-www-form-urlencoded",
               },
               body: new URLSearchParams({
                 token: id_token,
-                client_id: metadata.client_id,
-                client_secret: metadata.client_secret,
+                client_id: metadata.clientId,
+                client_secret: metadata.clientSecret,
               }),
             }).catch(() => {});
           }
@@ -249,18 +276,18 @@ const OIDCVirtualStore = <C extends CustomClaims, IU extends string>(
         const metadata = opts.iss;
         const refresh_token = await opts.token.getRefreshToken(c);
         if (refresh_token) {
-          if (metadata.supports_refresh) {
+          if (!metadata.useLocalJwt) {
             inner.setIDToken(c, undefined); // Cascade
           }
-          await fetch(metadata.token_revocation_endpoint, {
+          await fetch(metadata.tokenRevocationEndpoint, {
             method: "POST",
             headers: {
               "Content-Type": "application/x-www-form-urlencoded",
             },
             body: new URLSearchParams({
               token: refresh_token,
-              client_id: metadata.client_id,
-              client_secret: metadata.client_secret,
+              client_id: metadata.clientId,
+              client_secret: metadata.clientSecret,
             }),
           }).catch(() => {});
         }
@@ -275,28 +302,33 @@ const OIDCVirtualStore = <C extends CustomClaims, IU extends string>(
 /**
  * Get type of OIDC
  */
-type OIDCType<T> = T extends OIDC<CustomClaims, string>
+type OIDCManagerType<T> = T extends OIDCManager<CustomClaims, string>
   ? T
   : T extends {
         __oidc: infer U;
       } & Record<keyof any, unknown>
-    ? OIDCType<U>
+    ? OIDCManagerType<U>
     : T extends {
           Variables: infer U;
         } & Record<keyof any, unknown>
-      ? OIDCType<U>
+      ? OIDCManagerType<U>
       : T extends MiddlewareHandler<infer U>
-        ? OIDCType<U>
-        : never;
+        ? OIDCManagerType<U>
+        : T extends OIDCSetupResult<infer C, infer IU>
+          ? OIDCManager<C, IU>
+          : never;
 
 /**
  * Get type of OIDC Custom Claims
  */
-export type ClaimsType<T> = OIDCType<T> extends OIDC<infer C, string>
+export type ClaimsType<T> = OIDCManagerType<T> extends OIDCManager<
+  infer C,
+  string
+>
   ? C
   : T extends IssuerMetadata<infer C, string>
     ? C
-    : T extends OidcOptions<infer C, string>
+    : T extends OIDCOptions<infer C, string>
       ? C
       : T extends CustomClaims
         ? T
@@ -305,153 +337,142 @@ export type ClaimsType<T> = OIDCType<T> extends OIDC<infer C, string>
 /**
  * Get type of OIDC Issuer URL
  */
-export type IssuerType<T> = OIDCType<T> extends OIDC<CustomClaims, infer IU>
+export type IssuerType<T> = OIDCManagerType<T> extends OIDCManager<
+  CustomClaims,
+  infer IU
+>
   ? IU
   : T extends IssuerMetadata<CustomClaims, infer IU>
     ? IU
-    : T extends OidcOptions<CustomClaims, infer IU>
+    : T extends OIDCOptions<CustomClaims, infer IU>
       ? IU
-      : never;
+      : T extends string
+        ? T
+        : never;
 
-type OIDCVariables<C extends CustomClaims, IU extends string> = {
-  __oidc: OIDC<C, IU>;
-} & Record<keyof any, unknown>;
+export type OIDCMiddlewareType<T> = T extends OIDCMiddleware<CustomClaims>
+  ? T
+  : ClaimsType<T> extends CustomClaims
+    ? OIDCMiddleware<ClaimsType<T>>
+    : never;
 
-type OIDCEnv<C extends CustomClaims, IU extends string> = {
-  Variables: OIDCVariables<C, IU>;
-} & Record<keyof any, unknown>;
-
-type OIDCMiddleware<
-  C extends CustomClaims,
-  IU extends string,
-> = MiddlewareHandler<OIDCEnv<C, IU>>;
-
-type UseClaimsEnv<C extends CustomClaims> = {
+type OIDCEnv<C extends CustomClaims> = {
   Variables: {
     claims: C | undefined;
   } & Record<keyof any, unknown>;
 };
 
-type OIDCClaimsMiddleware<
+type OIDCInternalEnv<C extends CustomClaims, IU extends string> = {
+  Variables: {
+    __oidc: OIDCManager<C, IU> | undefined;
+    claims: C | undefined;
+  } & Record<keyof any, unknown>;
+} & Record<keyof any, unknown>;
+
+type OIDCInternalMiddleware<
   C extends CustomClaims,
   IU extends string,
-> = MiddlewareHandler<
-  OIDCEnv<C, IU> & UseClaimsEnv<C> & Record<keyof any, unknown>
+> = MiddlewareHandler<OIDCInternalEnv<C, IU>>;
+
+type OIDCMiddleware<C extends CustomClaims> = MiddlewareHandler<OIDCEnv<C>>;
+
+type OIDCInternalHandler<C extends CustomClaims, IU extends string> = Handler<
+  OIDCInternalEnv<C, IU>
 >;
 
-/**
- * Get type of Middleware with CustomClaims
- */
-export type WithClaimsMiddlewareType<T> = ClaimsType<T> extends CustomClaims
-  ? MiddlewareHandler<UseClaimsEnv<ClaimsType<T>>>
-  : never;
+type OIDCHandler<C extends CustomClaims> = Handler<OIDCEnv<C>>;
 
 /**
- * Middleware to use OpenID Connect.
  * @template C Custom claims for JWT tokens
  * @template IU Union of the const-strings that represent Issuer URLs.
- * @param opts OIDC options
- * @returns OIDCMiddleware
+ * @template P Path parameters
+ * @template I Input
  */
-export const oidc = <C extends CustomClaims, IU extends string>(
+export interface OIDCSetupResult<C extends CustomClaims, IU extends string> {
+  /**
+   * Login handler for OpenID Connect.
+   * @param iss Issuer URL
+   * @param callback Callback function
+   * @returns Handler
+   */
+  loginHandler: (
+    iss: IU,
+    callback: (
+      res:
+        | {
+            type: "OK";
+            claims: C;
+          }
+        | {
+            type: "ERR";
+            error: "OAuthServerError";
+          }
+        | {
+            type: "ERR";
+            error: "Unauthorized";
+          },
+      ...args: Parameters<OIDCHandler<C>>
+    ) => ReturnType<OIDCHandler<C>>,
+  ) => OIDCHandler<C>;
+
+  /**
+   * Middleware to obtain claims from OpenID Connect.
+   */
+  useClaims: OIDCMiddleware<C>;
+
+  /**
+   * Logout handler for OpenID Connect.
+   * @param callback Callback function
+   * @returns Handler
+   */
+  logoutHandler: (callback: Handler) => Handler;
+}
+
+export const OIDC = <C extends CustomClaims, IU extends string>(
   opts:
-    | OidcOptions<C, IU>
-    | ((c: Context) => OidcOptions<C, IU> | Promise<OidcOptions<C, IU>>),
-): OIDCMiddleware<C, IU> => {
-  return async (c, n) => {
+    | OIDCOptions<C, IU>
+    | ((c: Context) => OIDCOptions<C, IU> | Promise<OIDCOptions<C, IU>>),
+): OIDCSetupResult<C, IU> => {
+  const useOIDC: OIDCInternalMiddleware<C, IU> = async (c, n) => {
     if (c.get("__oidc")) {
       await n();
       return;
     }
     const o = typeof opts === "function" ? await opts(c) : opts;
-    const oidc = await OIDC.create(c, o);
+    const oidc = await OIDCManager.create(c, o);
     c.set("__oidc", oidc);
     await n();
   };
-};
+  return {
+    loginHandler: (iss, callback) =>
+      every(useOIDC, (async (c, ...args) => {
+        const oidc = c.get("__oidc")!;
+        const res = await oidc.login(c, iss);
 
-/**
- * Middleware to obtain claims from OpenID Connect.
- * @template C Custom claims for JWT tokens
- * @template IU Union of the const-strings that represent Issuer URLs.
- */
-export const useClaims = <
-  C extends CustomClaims,
-  IU extends string,
->(): OIDCClaimsMiddleware<C, IU> => {
-  return async (c, n) => {
-    const oidc = c.get("__oidc")!;
-    const claims = await oidc.getClaims(c);
-    c.set("claims", claims);
-    await n();
-  };
-};
-
-/**
- * Logout handler for OpenID Connect.
- * @template P Path parameters
- * @template I Input
- * @param callback Callback function
- * @returns Handler
- */
-export const logoutHandler = <
-  P extends string = any,
-  I extends Input = BlankInput,
->(
-  callback: (...args: Parameters<Handler>) => ReturnType<Handler>,
-): Handler<any, P, I> => {
-  return async (c, ...args) => {
-    const oidc = c.get("__oidc")!;
-    await oidc.logout(c);
-    return callback(c, ...args);
-  };
-};
-
-/**
- * Login handler for OpenID Connect.
- * @template C Custom claims for JWT tokens
- * @template IU Union of the const-strings that represent Issuer URLs.
- * @template P Path parameters
- * @template I Input
- * @param iss Issuer URL
- * @param callback Callback function
- * @returns Handler
- */
-export const loginHandler = <
-  C extends CustomClaims,
-  IU extends string,
-  P extends string = any,
-  I extends Input = BlankInput,
->(
-  iss: IU,
-  callback: (
-    res:
-      | {
-          type: "OK";
-          claims: C;
+        switch (res.type) {
+          case "RESPONSE":
+            return res.response;
+          case "OK":
+            c.set("claims", res.claims);
         }
-      | {
-          type: "ERR";
-          error: "OAuthServerError";
-        }
-      | {
-          type: "ERR";
-          error: "Unauthorized";
-        },
-    ...args: Parameters<Handler>
-  ) => ReturnType<Handler>,
-): Handler<any, P, I> => {
-  return async (c, ...args) => {
-    const oidc = c.get("__oidc")!;
-    const res = await oidc.login(c, iss);
-
-    switch (res.type) {
-      case "RESPONSE":
-        return res.response;
-      case "OK":
-        c.set("claims", res.claims);
-    }
-    return callback(res, c, ...args);
+        return await callback(
+          res,
+          c as unknown as Context<OIDCEnv<C>>,
+          ...args,
+        );
+      }) satisfies OIDCInternalHandler<C, IU>),
+    useClaims: every(useOIDC, async (c, n) => {
+      const oidc = c.get("__oidc")!;
+      const claims = await oidc.getClaims(c);
+      c.set("claims", claims);
+      await n();
+    }),
+    logoutHandler: (callback) =>
+      every(useOIDC, (async (c, ...args) => {
+        const oidc = c.get("__oidc")!;
+        await oidc.logout(c);
+        return await callback(c, ...args);
+      }) satisfies OIDCInternalHandler<C, IU>),
   };
 };
 
@@ -460,13 +481,13 @@ export const loginHandler = <
  * @template C Custom claims for JWT tokens
  * @template IU Union of the const-strings that represent Issuer URLs.
  */
-class OIDC<C extends CustomClaims, IU extends string> {
+class OIDCManager<C extends CustomClaims, IU extends string> {
   readonly #tokens: TokenStore;
-  readonly #opts: OidcOptions<C, IU>;
+  readonly #opts: OIDCOptions<C, IU>;
 
   private constructor(arg: {
     tokens: TokenStore;
-    opts: OidcOptions<C, IU>;
+    opts: OIDCOptions<C, IU>;
   }) {
     this.#tokens = arg.tokens;
     this.#opts = arg.opts;
@@ -480,8 +501,8 @@ class OIDC<C extends CustomClaims, IU extends string> {
    */
   static async create<C extends CustomClaims, IU extends string>(
     c: Context,
-    opts: OidcOptions<C, IU>,
-  ): Promise<OIDC<C, IU>> {
+    opts: OIDCOptions<C, IU>,
+  ): Promise<OIDCManager<C, IU>> {
     const issurl = await opts.getIssUrl(c);
     const iss = opts.issuers.find((i) => i.issuer === issurl);
     if (!iss) {
@@ -498,7 +519,7 @@ class OIDC<C extends CustomClaims, IU extends string> {
         token: clientSideTokenStore,
       }),
     });
-    return new OIDC({
+    return new OIDCManager({
       tokens,
       opts,
     });
@@ -563,15 +584,15 @@ class OIDC<C extends CustomClaims, IU extends string> {
     if (code) {
       // If an authorization code is received
       // Request token with authorization code
-      const tokenResponse = await fetch(metadata.token_endpoint, {
+      const tokenResponse = await fetch(metadata.tokenEndpoint, {
         method: "POST",
         headers: {
           "Content-Type": "application/x-www-form-urlencoded",
         },
         body: new URLSearchParams({
           code,
-          client_id: metadata.client_id,
-          client_secret: metadata.client_secret,
+          client_id: metadata.clientId,
+          client_secret: metadata.clientSecret,
           redirect_uri,
           grant_type: "authorization_code",
         }),
@@ -585,7 +606,7 @@ class OIDC<C extends CustomClaims, IU extends string> {
           error: "OAuthServerError",
         };
       }
-      if (metadata.supports_refresh) {
+      if (!metadata.useLocalJwt) {
         // CASE1: a refresh token is available
         // Save idToken and refresh_token
         if (tokenData.refresh_token) {
@@ -603,15 +624,14 @@ class OIDC<C extends CustomClaims, IU extends string> {
           throw new Error("Invalid ID Token");
         }
         const exp =
-          Math.floor((Date.now() + metadata.local_jwt_options.maxAge) / 1000) +
-          1;
+          Math.floor((Date.now() + metadata.localJwtOptions.maxAge) / 1000) + 1;
         token = await sign(
           {
             ...claims,
             exp,
           },
-          metadata.local_jwt_options.privateKey,
-          metadata.local_jwt_options.alg,
+          metadata.localJwtOptions.privateKey,
+          metadata.localJwtOptions.alg,
         );
         await this.#tokens.setIDToken(c, token);
         await this.#tokens.setRefreshToken(c, mayToken);
@@ -628,14 +648,13 @@ class OIDC<C extends CustomClaims, IU extends string> {
     if (!token) {
       // Here there is no valid refresh_token either.
       // Considered as login start by user access
-      const authUrl = new URL(metadata.auth_endpoint);
+      const authUrl = new URL(metadata.authEndpoint);
       authUrl.searchParams.append("response_type", "code");
-      authUrl.searchParams.append("client_id", metadata.client_id);
+      authUrl.searchParams.append("client_id", metadata.clientId);
       authUrl.searchParams.append("redirect_uri", redirect_uri);
       authUrl.searchParams.append("scope", metadata.scopes.join(" "));
       if (
-        metadata.auth_endpoint ===
-        "https://accounts.google.com/o/oauth2/v2/auth"
+        metadata.authEndpoint === "https://accounts.google.com/o/oauth2/v2/auth"
       ) {
         authUrl.searchParams.append("access_type", "offline");
         authUrl.searchParams.append("prompt", "consent");
@@ -673,8 +692,8 @@ class OIDC<C extends CustomClaims, IU extends string> {
       await this.logout(c);
       return;
     }
-    if (!metadata.supports_refresh) {
-      const { privateKey, alg, maxAge } = metadata.local_jwt_options;
+    if (metadata.useLocalJwt) {
+      const { privateKey, alg, maxAge } = metadata.localJwtOptions;
       try {
         const claims = await verify(idToken, privateKey, alg);
         return claims as C;
@@ -693,8 +712,8 @@ class OIDC<C extends CustomClaims, IU extends string> {
               ...claims,
               exp,
             },
-            metadata.local_jwt_options.privateKey,
-            metadata.local_jwt_options.alg,
+            metadata.localJwtOptions.privateKey,
+            metadata.localJwtOptions.alg,
           );
           await this.#tokens.setIDToken(c, token);
           return claims;
@@ -717,15 +736,15 @@ class OIDC<C extends CustomClaims, IU extends string> {
       return;
     }
 
-    const tokenResponse = await fetch(metadata.token_endpoint, {
+    const tokenResponse = await fetch(metadata.tokenEndpoint, {
       method: "POST",
       headers: {
         "Content-Type": "application/x-www-form-urlencoded",
       },
       body: new URLSearchParams({
         refresh_token,
-        client_id: metadata.client_id,
-        client_secret: metadata.client_secret,
+        client_id: metadata.clientId,
+        client_secret: metadata.clientSecret,
         grant_type: "refresh_token",
       }),
     });
@@ -748,28 +767,28 @@ class OIDC<C extends CustomClaims, IU extends string> {
     if (idToken) {
       const metadata = await this.#getIssuerMetadata(c);
       if (metadata) {
-        await fetch(metadata.token_revocation_endpoint, {
+        await fetch(metadata.tokenRevocationEndpoint, {
           method: "POST",
           headers: {
             "Content-Type": "application/x-www-form-urlencoded",
           },
           body: new URLSearchParams({
             token: idToken,
-            client_id: metadata.client_id,
-            client_secret: metadata.client_secret,
+            client_id: metadata.clientId,
+            client_secret: metadata.clientSecret,
           }),
         }).catch(() => {});
         const refresh_token = await this.#tokens.getRefreshToken(c);
         if (refresh_token) {
-          await fetch(metadata.token_revocation_endpoint, {
+          await fetch(metadata.tokenRevocationEndpoint, {
             method: "POST",
             headers: {
               "Content-Type": "application/x-www-form-urlencoded",
             },
             body: new URLSearchParams({
               token: refresh_token,
-              client_id: metadata.client_id,
-              client_secret: metadata.client_secret,
+              client_id: metadata.clientId,
+              client_secret: metadata.clientSecret,
             }),
           }).catch(() => {});
         }

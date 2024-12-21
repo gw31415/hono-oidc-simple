@@ -37,7 +37,8 @@ npm i @gw31415/hono-oidc-simple
 /** Cookie expiration period */
 const COOKIE_MAXAGE = 60 * 60 * 24 * 30 * 6; // 6 months
 
-const useOIDC = oidc((c) => {
+/** Set-up OIDC */
+const oidc = OIDC((c) => {
   const envs = env<{
     OIDC_GOOGLE_CLIENT: string;
     OIDC_GOOGLE_SECRET: string;
@@ -46,10 +47,10 @@ const useOIDC = oidc((c) => {
     issuers: [
       {
         issuer: "https://accounts.google.com",
-        auth_endpoint: "https://accounts.google.com/o/oauth2/v2/auth",
-        token_endpoint: "https://oauth2.googleapis.com/token",
-        token_revocation_endpoint: "https://oauth2.googleapis.com/revoke",
-        supports_refresh: true,
+        authEndpoint: "https://accounts.google.com/o/oauth2/v2/auth",
+        tokenEndpoint: "https://oauth2.googleapis.com/token",
+        tokenRevocationEndpoint: "https://oauth2.googleapis.com/revoke",
+        useLocalJwt: false,
         createClaims: async (c, tokens) => {
           const idToken: string | undefined = await token.getIDToken(c);
           if (idToken) {
@@ -116,16 +117,39 @@ const useOIDC = oidc((c) => {
 ### Create your Middlewares to get the claims
 
 ```ts
-type Middleware = WithClaimsMiddlewareType<typeof useOIDC>;
+type Middleware = OIDCMiddlewareType<typeof oidc>;
 
-/** Middleware to use CustomClaims */
-export const withClaims: Middleware = every(useOIDC, useClaims());
+/**
+ * @param iss OIDC Issuer URL
+ */
+export const loginRoute = (iss: IssuerType<typeof oidc>) =>
+  createRoute(
+    oidc.loginHandler(iss, (res, c) => {
+      if (res.type === "ERR") {
+        const error = res.error;
+        switch (error) {
+          case "Unauthorized":
+            return c.redirect("/");
+          case "OAuthServerError":
+            return c.text(`Error: ${error}`, { status: 500 });
+          default:
+            return c.text("Invalid state", { status: 500 });
+        }
+      }
+      return c.redirect("/");
+    }),
+  );
+
+export const logoutRoute = createRoute(
+  oidc.logoutHandler((c) => {
+    return c.redirect("/");
+  }),
+);
+
+export const useClaims = oidc.useClaims;
 
 /** Middleware to specify pages that require login */
-export const loginRequired: Middleware = every(withClaims, (async (
-  c,
-  next,
-) => {
+export const loginRequired: Middleware = every(useClaims, (async (c, next) => {
   if (!c.var.claims) {
     return c.render(
       <div className="font-sans size-full flex items-center justify-center">
@@ -135,7 +159,7 @@ export const loginRequired: Middleware = every(withClaims, (async (
           </CardHeader>
           <CardContent>
             <CardDescription>
-	      You must be logged in to view this page.
+	            You must be logged in to view this page.
             </CardDescription>
           </CardContent>
           <CardFooter>
