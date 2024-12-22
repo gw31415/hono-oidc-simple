@@ -1,5 +1,5 @@
-import { type BuildOptions, build } from "esbuild";
 import { readFileSync } from "node:fs";
+import { type BuildOptions, build } from "esbuild";
 
 const dependencies =
   JSON.parse(readFileSync("package.json", "utf-8")).dependencies || {};

@@ -1,12 +1,9 @@
 {
   "$schema": "http://json.schemastore.org/package",
   "name": "@gw31415/hono-oidc-simple",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "author": "gw31415",
-  "keywords": [
-    "Hono",
-    "OIDC"
-  ],
+  "keywords": ["Hono", "OIDC"],
   "description": "Simplifies the implementation of OIDC auth in Hono",
   "license": "Apache-2.0",
   "homepage": "https://github.com/gw31415/hono-oidc-simple",
@@ -25,9 +22,7 @@
     "build:esbuild": "ts-node build.ts",
     "build:types": "tsc --declaration --emitDeclarationOnly --declarationDir ./dist"
   },
-  "files": [
-    "dist"
-  ],
+  "files": ["dist"],
   "main": "dist/index.cjs",
   "module": "dist/index.mjs",
   "types": "dist/index.d.ts",

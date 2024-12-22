@@ -188,13 +188,13 @@ const OIDCVirtualStore = <C extends CustomClaims, IU extends string>(
   const refreshTokenStore: RefreshTokenStore = InMemoryStore();
   const inner: TokenStore = {
     async getIDToken(c) {
-      const itoken = opts.token.getIDToken(c);
+      const itoken = await opts.token.getIDToken(c);
       if (itoken) {
         return itoken;
       }
 
       // Refresh
-      const rtoken = await inner.getRefreshToken(c);
+      const rtoken = await opts.token.getRefreshToken(c);
       if (!rtoken) {
         return undefined;
       }
