@@ -1,7 +1,7 @@
 {
   "$schema": "http://json.schemastore.org/package",
   "name": "@gw31415/hono-oidc-simple",
-  "version": "0.6.1",
+  "version": "0.6.2",
   "author": "gw31415",
   "keywords": ["Hono", "OIDC"],
   "description": "Simplifies the implementation of OIDC auth in Hono",

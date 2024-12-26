@@ -682,11 +682,6 @@ class OIDCManager<C extends CustomClaims, IU extends string> {
   }
 
   public async getClaims(c: Context): Promise<C | undefined> {
-    const idToken = await this.#tokens.getIDToken(c);
-    if (!idToken) {
-      await this.logout(c);
-      return;
-    }
     const metadata = await this.#getIssuerMetadata(c);
     if (!metadata) {
       await this.logout(c);
@@ -695,6 +690,10 @@ class OIDCManager<C extends CustomClaims, IU extends string> {
     if (metadata.useLocalJwt) {
       const { privateKey, alg, maxAge } = metadata.localJwtOptions;
       try {
+        const idToken = await this.#tokens.getIDToken(c);
+        if (!idToken) {
+          throw new JwtTokenExpired("");
+        }
         const claims = await verify(idToken, privateKey, alg);
         return claims as C;
       } catch (e) {
