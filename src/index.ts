@@ -68,7 +68,10 @@ export type IssuerMetadata<C extends CustomClaims, IU extends string> =
   | (AbstractIssuerMetadata<IU> & {
       /** Indicates if the Issuer supports refresh tokens */
       useLocalJwt: false;
-      createClaims: (c: Context, tokens: TokenGetter) => C | Promise<C>;
+      createClaims: (
+        c: Context,
+        tokens: TokenGetter,
+      ) => C | undefined | Promise<C | undefined>;
     });
 
 /**
