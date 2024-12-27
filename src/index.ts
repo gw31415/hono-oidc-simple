@@ -611,7 +611,7 @@ class OIDCManager<C extends CustomClaims, IU extends string> {
           error: "OAuthServerError",
         };
       }
-      const mayToken = tokenData.access_token ?? tokenData.id_token;
+      const mayToken = tokenData.id_token ?? tokenData.access_token;
       if (typeof mayToken !== "string") {
         return {
           type: "ERR",
