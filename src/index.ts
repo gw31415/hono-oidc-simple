@@ -9,6 +9,9 @@ import { JwtTokenExpired } from "hono/utils/jwt/types";
 /** Not-null type */
 type NonNull = Record<never, never>;
 
+//biome-ignore lint: `keyof any` is not `any` itself.
+type AnyRecord<T = unknown> = Record<keyof any, T>;
+
 /** Custom claims for JWT tokens */
 type CustomClaims = {
   [key: Exclude<string, "exp">]: NonNull | undefined;
@@ -306,11 +309,11 @@ type OIDCManagerType<T> = T extends OIDCManager<CustomClaims, string>
   ? T
   : T extends {
         __oidc: infer U;
-      } & Record<keyof any, unknown>
+      } & AnyRecord
     ? OIDCManagerType<U>
     : T extends {
           Variables: infer U;
-        } & Record<keyof any, unknown>
+        } & AnyRecord
       ? OIDCManagerType<U>
       : T extends MiddlewareHandler<infer U>
         ? OIDCManagerType<U>
@@ -359,15 +362,15 @@ export type OIDCMiddlewareType<T> = T extends OIDCMiddleware<CustomClaims>
 type OIDCEnv<C extends CustomClaims> = {
   Variables: {
     claims: C | undefined;
-  } & Record<keyof any, unknown>;
+  } & AnyRecord;
 };
 
 type OIDCInternalEnv<C extends CustomClaims, IU extends string> = {
   Variables: {
     __oidc: OIDCManager<C, IU> | undefined;
     claims: C | undefined;
-  } & Record<keyof any, unknown>;
-} & Record<keyof any, unknown>;
+  } & AnyRecord;
+} & AnyRecord;
 
 type OIDCInternalMiddleware<
   C extends CustomClaims,
@@ -598,7 +601,13 @@ class OIDCManager<C extends CustomClaims, IU extends string> {
         }),
       });
 
-      const tokenData = (await tokenResponse.json()) as any;
+      const tokenData: AnyRecord | null = await tokenResponse.json();
+      if (!(tokenData instanceof Object)) {
+        return {
+          type: "ERR",
+          error: "OAuthServerError",
+        };
+      }
       const mayToken = tokenData.access_token ?? tokenData.id_token;
       if (typeof mayToken !== "string") {
         return {
@@ -673,8 +682,9 @@ class OIDCManager<C extends CustomClaims, IU extends string> {
         error: "Unauthorized",
       };
     }
+
     // INFO: If claims can be obtained with getClaimsFromToken, the token is valid (type constraint is applied).
-    await this.#tokens.setIDToken(c, token!);
+    await this.#tokens.setIDToken(c, token);
     return {
       type: "OK",
       claims,
@@ -747,9 +757,9 @@ class OIDCManager<C extends CustomClaims, IU extends string> {
         grant_type: "refresh_token",
       }),
     });
-    const tokenData = tokenResponse
+    const tokenData: AnyRecord | null = tokenResponse
       ? await tokenResponse.json()
-      : (undefined as any);
+      : null;
     const mayIDToken = tokenData?.id_token;
     if (typeof mayIDToken === "string") {
       // If ID Token is successfully obtained, attempt verification again

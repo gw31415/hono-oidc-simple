@@ -13,11 +13,7 @@
     "rules": {
       "recommended": true,
       "style": {
-        "useShorthandFunctionType": "off",
         "noNonNullAssertion": "off"
-      },
-      "suspicious": {
-        "noExplicitAny": "off"
       }
     }
   },
