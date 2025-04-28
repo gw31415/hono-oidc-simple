@@ -1,7 +1,7 @@
 {
   "$schema": "http://json.schemastore.org/package",
   "name": "@gw31415/hono-oidc-simple",
-  "version": "0.7.1",
+  "version": "0.7.2",
   "author": "gw31415",
   "keywords": [
     "Hono",
