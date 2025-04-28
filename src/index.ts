@@ -60,6 +60,7 @@ export type IssuerMetadata<C extends CustomClaims, IU extends string> =
       useLocalJwt: true;
       /** Options for creating custom JWT when no refresh token is available */
       localJwtOptions: LocalJwtOptions;
+      /** Specify how Claims are generated using token and context */
       createClaims: (
         c: Context,
         tokens: RefreshTokenGetter,
@@ -68,6 +69,7 @@ export type IssuerMetadata<C extends CustomClaims, IU extends string> =
   | (AbstractIssuerMetadata<IU> & {
       /** Indicates if the Issuer supports refresh tokens */
       useLocalJwt: false;
+      /** Specify how Claims are generated using token and context */
       createClaims: (
         c: Context,
         tokens: TokenGetter,
