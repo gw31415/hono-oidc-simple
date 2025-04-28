@@ -436,11 +436,11 @@ export interface OIDCSetupResult<C extends CustomClaims, IU extends string> {
   logoutHandler: (callback: Handler) => Handler;
 }
 
-export const OIDC = <C extends CustomClaims, IU extends string>(
+export function OIDC<C extends CustomClaims, IU extends string>(
   opts:
     | OIDCOptions<C, IU>
     | ((c: Context) => OIDCOptions<C, IU> | Promise<OIDCOptions<C, IU>>),
-): OIDCSetupResult<C, IU> => {
+): OIDCSetupResult<C, IU> {
   const useOIDC: OIDCInternalMiddleware<C, IU> = async (c, n) => {
     if (c.get("__oidc")) {
       await n();
@@ -482,7 +482,7 @@ export const OIDC = <C extends CustomClaims, IU extends string>(
         return await callback(c, ...args);
       }) satisfies OIDCInternalHandler<C, IU>),
   };
-};
+}
 
 /**
  * Internal OpenID Connect client.
