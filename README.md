@@ -30,6 +30,7 @@ npm i @gw31415/hono-oidc-simple
 
 ## Usage
 
+Please check the example project: [`gw31415/hono-oidc-simple-example`](https://github.com/gw31415/hono-oidc-simple-example).
 
 ### Setup and Create Middleware of OIDC
 
